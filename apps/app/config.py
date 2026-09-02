@@ -16,6 +16,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=str(ENV_FILE),
         case_sensitive=False,
+        extra="ignore",
     )
 
     # === Application ===
