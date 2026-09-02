@@ -1,4 +1,4 @@
-.PHONY: help setup dev stop clean
+.PHONY: help setup dev stop clean triage-bugs review-pr review-comment-fixes upload-test-cases
 
 help:
 	@echo "Triage Bugs Tool - Developer Makefile"
@@ -7,10 +7,19 @@ help:
 	@echo "  make dev    - Start the app on http://localhost:8000 (Ctrl-C to stop)"
 	@echo "  make stop   - Kill a background dev process (if started with 'make dev &')"
 	@echo "  make clean  - Remove caches"
+	@echo ""
+	@echo "Run a workflow directly from the CLI (no UI/server needed) - pass its"
+	@echo "arguments via ARGS. All read .env the same way 'make dev' does."
+	@echo "  make triage-bugs ARGS=\"--apply --add-comment\""
+	@echo "  make review-pr ARGS=\"--repo my-repo --pr 1234\""
+	@echo "  make review-comment-fixes ARGS=\"--repo my-repo --pr 1234\""
+	@echo "  make upload-test-cases ARGS=\"--us 20.1.1 --plan web --csv path/to/cases.csv\""
+	@echo "  (add --help to ARGS on any of the above for the full list of options)"
 
 VENV := venv
 PIP := $(VENV)/bin/pip
 UVICORN := $(VENV)/bin/uvicorn
+PYTHON := $(VENV)/bin/python
 # Requires Python 3.11+ (the codebase uses `X | None` union syntax evaluated
 # at import time). Prefer a versioned interpreter over a bare `python3`,
 # which on macOS often resolves to the older system Python.
@@ -46,6 +55,18 @@ dev:
 stop:
 	-pkill -f "uvicorn apps.app.main"
 	@echo "Dev process stopped"
+
+triage-bugs:
+	PYTHONPATH=$(PWD) $(PYTHON) scripts/triage_bugs.py $(ARGS)
+
+review-pr:
+	PYTHONPATH=$(PWD) $(PYTHON) scripts/review_pull_request.py $(ARGS)
+
+review-comment-fixes:
+	PYTHONPATH=$(PWD) $(PYTHON) scripts/review_comment_fixes.py $(ARGS)
+
+upload-test-cases:
+	PYTHONPATH=$(PWD) $(PYTHON) scripts/upload_test_cases.py $(ARGS)
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true
