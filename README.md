@@ -5,13 +5,16 @@
 реальный ли это баг. Работает в режиме dry-run (только предпросмотр) или apply (реально
 пишет в Jira).
 
-Плюс два workflow для код-ревью Pull Request'ов в Azure DevOps через Gemini:
+Плюс три workflow для работы с Azure DevOps через Gemini:
 **Review Pull Request** (ревью diff'а на баги/несостыковки, с возможностью запостить найденное
-как комментарии к строкам) и **Review Comment Fixes** (проверка, действительно ли исправлены
-комментарии, помеченные автором PR как «исправлено», а не просто закрыты без реального фикса).
+как комментарии к строкам), **Review Comment Fixes** (проверка, действительно ли исправлены
+комментарии, помеченные автором PR как «исправлено», а не просто закрыты без реального фикса)
+и **Upload Test Cases** (загрузка провалидированного CSV с тест-кейсами в нужный Test Plan —
+Web/Mobile/API — с автоматическим резолвом suite-цепочки по Confluence-спецификациям User Story).
 
-Это выделенная часть проекта **Trace2Quality** — функционал Triage Bugs и PR-ревью, плюс всё,
-от чего они зависят (без генерации тест-кейсов, coverage-анализа и прочего).
+Это выделенная часть проекта **Trace2Quality** — функционал Triage Bugs, PR-ревью и загрузки
+тест-кейсов, плюс всё, от чего они зависят (без coverage-анализа, автогенерации тест-кейсов
+из спецификаций и прочего).
 
 ## Требования
 
@@ -20,7 +23,9 @@
   сам найдёт `python3.11`/`python3.12`/`python3.13`, если он есть в PATH (например,
   после `brew install python@3.11`); если такого интерпретатора нет, `make setup`
   остановится с понятной ошибкой вместо непонятного краха.
-- Учётки с доступом к Jira Cloud, Confluence Cloud и Google Gemini API
+- Учётки с доступом к Jira Cloud, Confluence Cloud и Google Gemini API — обязательно для
+  Triage Bugs; для Review Pull Request / Review Comment Fixes нужны Azure DevOps + Gemini,
+  для Upload Test Cases — Azure DevOps + Confluence
 - Никаких внешних сервисов (Redis, Postgres, Docker) не требуется — всё работает на
   локальном venv + SQLite
 
@@ -34,7 +39,8 @@ make setup      # создаст venv, поставит зависимости, 
 make dev        # запустит приложение на http://localhost:8000
 ```
 
-Откройте **http://localhost:8000** — попадёте на дашборд.
+Откройте **http://localhost:8000** — попадёте на дашборд. Swagger-документация всех
+JSON API эндпоинтов — на **http://localhost:8000/docs**.
 
 Если `make` недоступен (например, Windows без WSL), эквивалентные команды:
 
@@ -68,7 +74,7 @@ JIRA_API_TOKEN=...
 
 GEMINI_API_KEY=...
 
-# Только для Review Pull Request / Review Comment Fixes:
+# Только для Review Pull Request / Review Comment Fixes / Upload Test Cases:
 AZURE_DEVOPS_ORG_URL=https://dev.azure.com/yourorg
 AZURE_DEVOPS_PROJECT=YourProject
 AZURE_DEVOPS_PAT=...
@@ -79,9 +85,25 @@ AZURE_DEVOPS_PAT=...
 
 - **Jira/Confluence API token**: https://id.atlassian.com/manage-profile/security/api-tokens
   → «Create API token».
-- **Gemini API key**: https://aistudio.google.com/apikey
-- **Azure DevOps PAT**: User Settings → Personal Access Tokens → New Token, права
-  **Code: Read & Write** (нужно для чтения diff'а PR и постинга комментариев/ответов).
+- **Gemini API key**: https://aistudio.google.com/apikey. `GEMINI_MODEL` должна быть
+  моделью, реально поддерживающей `generateContent` (например `gemini-2.0-flash`,
+  `gemini-2.5-flash`, `gemini-2.5-pro`) — иначе `Test Connection` вернёт
+  `404 models/<модель> is not found`. Список доступных вам моделей можно проверить так:
+  ```bash
+  curl "https://generativelanguage.googleapis.com/v1beta/models?key=$GEMINI_API_KEY" \
+    | jq -r '.models[] | select(.supportedGenerationMethods[]? == "generateContent") | .name'
+  ```
+- **Azure DevOps PAT**: User Settings → Personal Access Tokens → New Token. Права зависят
+  от того, какими workflow вы пользуетесь:
+  - Review Pull Request / Review Comment Fixes — **Code: Read & Write** (чтение diff'а PR,
+    тредов комментариев, постинг комментариев/ответов).
+  - Upload Test Cases — **Test Management: Read & Write** (suite'ы, тест-кейсы в Test Plan)
+    и **Work Items: Read & Write** (тест-кейс — это work item).
+  - Проще всего один раз выдать PAT с `Full access` на все нужные workflow сразу — но
+    учтите, что даже `Full access` не выдаёт прав, которых нет у самого пользователя в
+    проекте (например, права полного удаления work item'ов) — отсюда режим «Delete ALL
+    existing test cases» в Upload Test Cases убирает тест-кейсы из suite, а не удаляет их
+    навсегда (см. раздел про Upload Test Cases ниже).
 
 После правки `.env` перезапустите `make dev`.
 
@@ -150,7 +172,7 @@ curl -u "email:api_token" \
 DevOps) — публикация комментариев/ответов это отдельное, явное действие на странице
 мониторинга запуска.
 
-### Upload Test Cases (загрузка ревьюженных тест-кейсов в Azure DevOps)
+### Upload Test Cases (загрузка провалидированных тест-кейсов в Azure DevOps)
 
 1. Откройте **http://localhost:8000/ui/workflows/upload_test_cases/run**.
 2. Выберите **Test Plan** из выпадающего списка: Web (plan 15751), Mobile (plan 438)
@@ -243,9 +265,10 @@ scripts/           — CLI-обёртки над теми же workflow'ами �
 
 Это упрощённый, самодостаточный срез — вот что сознательно убрано:
 
-- Всё, что связано с Azure DevOps Test Plans (coverage-анализ, генерация тест-кейсов,
-  CSV Fixer, orphan test cases и т.д.) — Azure DevOps здесь используется только для чтения
-  Pull Request'ов (diff, треды комментариев) и постинга комментариев/ответов.
+- Coverage-анализ, автогенерация тест-кейсов из Confluence-спецификаций через Gemini,
+  CSV Fixer, поиск orphan test cases и переназначение test case work item'ов — Azure DevOps
+  здесь используется только под три конкретных workflow (чтение diff'а/тредов PR и постинг
+  комментариев/ответов; резолв suite-цепочки и создание/уборка тест-кейсов в Test Plan).
 - Celery/Redis — фоновые задачи выполняются в обычном Python-потоке в рамках процесса
   приложения (для одного пользователя этого достаточно).
 - Alembic-миграции — таблицы SQLite создаются автоматически при старте приложения

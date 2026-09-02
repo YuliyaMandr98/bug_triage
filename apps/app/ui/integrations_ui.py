@@ -41,7 +41,7 @@ _PROVIDER_LABELS = {
     "jira": "Jira",
     "confluence": "Confluence",
     "gemini": "Google Gemini",
-    "azure_devops": "Azure DevOps (PR review only)",
+    "azure_devops": "Azure DevOps",
 }
 
 
