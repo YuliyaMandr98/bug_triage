@@ -1,5 +1,7 @@
 """Integrations UI: configure Jira, Confluence and Gemini credentials."""
 
+from html import escape
+
 from fastapi import APIRouter, Depends, Request
 from fastapi.responses import HTMLResponse
 from sqlalchemy.orm import Session
@@ -68,7 +70,7 @@ async def integrations_page(request: Request, db: Session = Depends(get_db)) -> 
             "unconfigured": "#6c757d",
         }.get(status, "#6c757d")
         error_line = (
-            f'<p class="error-line">{config.error_message}</p>'
+            f'<p class="error-line">{escape(config.error_message[:500])}</p>'
             if config and config.error_message
             else ""
         )

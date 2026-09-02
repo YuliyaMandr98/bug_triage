@@ -60,7 +60,7 @@ async def runs_page(request: Request, db: Session = Depends(get_db)) -> str:
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Runs - Trace2Quality</title>
+        <title>Runs - Triage Bugs Tool</title>
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
             body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; }}
@@ -78,7 +78,7 @@ async def runs_page(request: Request, db: Session = Depends(get_db)) -> str:
     </head>
     <body>
         <nav>
-            <h1>🚀 Trace2Quality</h1>
+            <h1>🐛 Triage Bugs Tool</h1>
             <ul>
                 <li><a href="/ui">Dashboard</a></li>
                 <li><a href="/ui/workflows">Workflows</a></li>
@@ -132,7 +132,7 @@ async def run_detail_page(run_id: str, request: Request, db: Session = Depends(g
     <!DOCTYPE html>
     <html>
     <head>
-        <title>Run {run_id[:8]} - Trace2Quality</title>
+        <title>Run {run_id[:8]} - Triage Bugs Tool</title>
         <style>
             * {{ margin: 0; padding: 0; box-sizing: border-box; }}
             body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: #f5f5f5; }}
@@ -148,7 +148,7 @@ async def run_detail_page(run_id: str, request: Request, db: Session = Depends(g
     </head>
     <body>
         <nav>
-            <h1>🚀 Trace2Quality</h1>
+            <h1>🐛 Triage Bugs Tool</h1>
             <a href="/ui/runs">← Back to Runs</a>
         </nav>
 
