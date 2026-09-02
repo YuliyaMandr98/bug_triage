@@ -30,12 +30,18 @@ _PROVIDER_FIELDS = {
         ("api_key", "password", "Gemini API key"),
         ("model", "text", "gemini-2.0-flash"),
     ],
+    "azure_devops": [
+        ("org_url", "text", "https://dev.azure.com/yourorg"),
+        ("project", "text", "YourProject"),
+        ("pat", "password", "Azure DevOps Personal Access Token (Code: Read & Write)"),
+    ],
 }
 
 _PROVIDER_LABELS = {
     "jira": "Jira",
     "confluence": "Confluence",
     "gemini": "Google Gemini",
+    "azure_devops": "Azure DevOps (PR review only)",
 }
 
 

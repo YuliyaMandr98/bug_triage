@@ -5,8 +5,13 @@
 реальный ли это баг. Работает в режиме dry-run (только предпросмотр) или apply (реально
 пишет в Jira).
 
-Это выделенная часть проекта **Trace2Quality** — только функционал Triage Bugs и всё, от чего
-он зависит (без Azure DevOps, генерации тест-кейсов, coverage-анализа и прочего).
+Плюс два workflow для код-ревью Pull Request'ов в Azure DevOps через Gemini:
+**Review Pull Request** (ревью diff'а на баги/несостыковки, с возможностью запостить найденное
+как комментарии к строкам) и **Review Comment Fixes** (проверка, действительно ли исправлены
+комментарии, помеченные автором PR как «исправлено», а не просто закрыты без реального фикса).
+
+Это выделенная часть проекта **Trace2Quality** — функционал Triage Bugs и PR-ревью, плюс всё,
+от чего они зависят (без генерации тест-кейсов, coverage-анализа и прочего).
 
 ## Требования
 
@@ -62,6 +67,11 @@ JIRA_EMAIL=your.email@domain.com
 JIRA_API_TOKEN=...
 
 GEMINI_API_KEY=...
+
+# Только для Review Pull Request / Review Comment Fixes:
+AZURE_DEVOPS_ORG_URL=https://dev.azure.com/yourorg
+AZURE_DEVOPS_PROJECT=YourProject
+AZURE_DEVOPS_PAT=...
 ```
 
 Для Jira Cloud и Confluence Cloud на одном Atlassian-домене **email и API-токен обычно
@@ -70,15 +80,19 @@ GEMINI_API_KEY=...
 - **Jira/Confluence API token**: https://id.atlassian.com/manage-profile/security/api-tokens
   → «Create API token».
 - **Gemini API key**: https://aistudio.google.com/apikey
+- **Azure DevOps PAT**: User Settings → Personal Access Tokens → New Token, права
+  **Code: Read & Write** (нужно для чтения diff'а PR и постинга комментариев/ответов).
 
 После правки `.env` перезапустите `make dev`.
 
 ### Вариант B — через веб-интерфейс
 
-Откройте **http://localhost:8000/ui/integrations** — там три карточки (Jira, Confluence,
-Gemini). Заполните поля, нажмите **Save**, затем **Test Connection**, чтобы убедиться, что
-всё настроено верно. Значения хранятся в SQLite зашифрованными (Fernet, ключ —
-`APP_ENCRYPTION_KEY` в `.env`) и никогда не отображаются обратно в браузере.
+Откройте **http://localhost:8000/ui/integrations** — там карточки для каждого провайдера
+(Jira, Confluence, Gemini, Azure DevOps). Заполните поля, нажмите **Save**, затем
+**Test Connection**, чтобы убедиться, что всё настроено верно. Значения хранятся в SQLite
+зашифрованными (Fernet, ключ — `APP_ENCRYPTION_KEY` в `.env`) и никогда не отображаются
+обратно в браузере. Карточку Azure DevOps можно не заполнять, если вы используете только
+Triage Bugs.
 
 Конфиг из БД (вариант B) имеет приоритет над `.env` (вариант A) для каждого провайдера.
 
@@ -105,6 +119,107 @@ curl -u "email:api_token" \
   "https://yourdomain.atlassian.net/rest/api/3/field" | jq '.[] | select(.name | test("Severity|Impact"; "i"))'
 ```
 
+### Review Pull Request (код-ревью PR через Gemini)
+
+1. Откройте **http://localhost:8000/ui/workflows/review_pull_request/run**.
+2. Укажите репозиторий (имя или ID) и номер PR в Azure DevOps. Поле «Project» нужно
+   заполнять только если он отличается от указанного в настройках интеграции.
+3. Нажмите **Run Review** — запустится dry-run: строится построчный diff последней
+   итерации PR, Gemini ищет баги/несостыковки/проблемы качества тестов и т.д.
+   По умолчанию diff и описание PR анонимизируются (JWT/email/телефоны/внутренние
+   URL) перед отправкой в Gemini — можно отключить чекбоксом.
+4. На странице мониторинга появится таблица найденных проблем (файл, строка,
+   severity, комментарий). Для каждой — кнопка **Post**, либо
+   **«Post All Findings to PR»**, чтобы опубликовать сразу все как комментарии
+   к строкам в самом PR.
+
+### Review Comment Fixes (проверка, реально ли исправлены комментарии)
+
+1. Откройте **http://localhost:8000/ui/workflows/review_comment_fixes/run**.
+2. Укажите репозиторий и номер PR — так же, как для Review Pull Request.
+3. Нажмите **Run Verification** — инструмент найдёт треды комментариев, помеченные
+   как «fixed»/«closed» либо получившие ответ автора кода, сравнит код «до» и
+   «после» вокруг закомментированной строки и попросит Gemini вынести вердикт:
+   `fixed` / `not_fixed` / `unclear`.
+4. Для тредов с вердиктом `not_fixed` доступна кнопка **Reply**, либо
+   **«Reply + Reopen All Not Fixed»** — оставит предложенный Gemini ответ в
+   треде и переоткроет его (если он был помечен fixed/closed), чтобы автор
+   увидел несостыковку.
+
+Оба PR-workflow **всегда** сначала выполняются в режиме анализа (без изменений в Azure
+DevOps) — публикация комментариев/ответов это отдельное, явное действие на странице
+мониторинга запуска.
+
+### Upload Test Cases (загрузка ревьюженных тест-кейсов в Azure DevOps)
+
+1. Откройте **http://localhost:8000/ui/workflows/upload_test_cases/run**.
+2. Выберите **Test Plan** из выпадающего списка: Web (plan 15751), Mobile (plan 438)
+   или API (plan 2015).
+3. Укажите номер User Story (`20.1.1`, `US-20.1.1` или `AUS-7.2` для админ-панели) и
+   приложите CSV-файл с уже провалидированными тест-кейсами (экспорт Azure DevOps Test Plan,
+   9-10 колонок).
+4. По умолчанию чекбокс **Apply** не отмечен — запуск только резолвит цепочку suite
+   (root → [Админ Панель] → Epic → User Story) по Confluence-предкам страницы User Story
+   и показывает превью тест-кейсов из CSV (с пометкой дубликатов по названию), ничего не
+   записывая в Azure DevOps.
+5. Отметьте **Apply**, чтобы реально создать тест-кейсы в резолвленном suite.
+6. Если в целевом suite уже есть тест-кейсы, выберите один из двух режимов:
+   - **Add new ones alongside existing** (по умолчанию) — тест-кейсы с уже существующим
+     (по точному совпадению) названием пропускаются, остальные добавляются к уже
+     имеющимся. Безопасно перезапускать повторно.
+   - **Delete ALL existing test cases first** — перед загрузкой убирает ВСЕ существующие
+     тест-кейсы из целевого suite и создаёт всё заново из CSV. Тест-кейсы при этом не
+     удаляются навсегда — они только отвязываются от suite (как при ручном действии
+     «Remove» в Test Plans UI), сам work item остаётся. Это намеренно: полное удаление
+     work item'а требует отдельного project-level права "Delete work items", которого
+     часто нет даже при PAT с полным доступом (PAT scope не расширяет реальные права
+     пользователя в проекте). Требует подтверждения в браузере.
+7. Раздел «Advanced options» позволяет переопределить название папки спецификаций в
+   Confluence, id fallback-папки админ-панели, название группирующего suite'а «Админ
+   Панель», имя Epic/US suite и целевой Azure DevOps State (по умолчанию `Ready`).
+
+## Запуск без UI (CLI)
+
+Каждый workflow можно запустить напрямую из терминала, без веб-интерфейса и сервера —
+скрипты читают тот же `.env`, что и `make dev`. Все они по умолчанию делают только
+предпросмотр/анализ (ничего не пишут во внешние системы) — добавьте `--apply`, чтобы
+реально применить изменения.
+
+```bash
+# Триаж багов
+make triage-bugs ARGS="--jql 'status = Backlog' --max-results 20"
+make triage-bugs ARGS="--apply --add-comment"
+
+# Ревью Pull Request через Gemini
+make review-pr ARGS="--repo my-repo --pr 1234"
+make review-pr ARGS="--repo my-repo --pr 1234 --apply"
+
+# Проверка, действительно ли исправлены комментарии в PR
+make review-comment-fixes ARGS="--repo my-repo --pr 1234"
+make review-comment-fixes ARGS="--repo my-repo --pr 1234 --apply"
+
+# Загрузка тест-кейсов в Azure DevOps (--plan: web / mobile / api)
+make upload-test-cases ARGS="--us 20.1.1 --plan web --csv path/to/cases.csv"
+make upload-test-cases ARGS="--us 20.1.1 --plan web --csv path/to/cases.csv --apply"
+make upload-test-cases ARGS="--us 20.1.1 --plan web --csv path/to/cases.csv --apply --replace-existing"
+```
+
+Полный список опций каждого скрипта — через `--help`, например:
+`make triage-bugs ARGS="--help"`.
+
+Без `make` — то же самое напрямую через venv:
+
+```bash
+PYTHONPATH=$(pwd) venv/bin/python scripts/triage_bugs.py --help
+PYTHONPATH=$(pwd) venv/bin/python scripts/review_pull_request.py --repo my-repo --pr 1234
+PYTHONPATH=$(pwd) venv/bin/python scripts/review_comment_fixes.py --repo my-repo --pr 1234
+PYTHONPATH=$(pwd) venv/bin/python scripts/upload_test_cases.py --us 20.1.1 --plan web --csv path/to/cases.csv
+```
+
+Результат каждого запуска сохраняется в `scripts/data/*.json` (путь можно переопределить
+через `--output`) — независимо от истории запусков в UI (`/ui/runs`), так как CLI-скрипты
+не используют базу данных приложения.
+
 ## Структура проекта
 
 ```
@@ -112,26 +227,35 @@ apps/app/
   main.py          — точка входа FastAPI, регистрация роутеров и клиентов интеграций
   config.py        — настройки (.env)
   database.py      — модели SQLAlchemy (SQLite, таблицы создаются автоматически при старте)
-  workflows.py     — исполнитель workflow triage_bugs (фоновый поток, без Celery/Redis)
+  workflows.py     — исполнитель workflow (фоновый поток, без Celery/Redis)
   api/             — JSON REST: /api/integrations, /api/workflows, /api/runs, /api/artifacts
   ui/              — серверный HTML-интерфейс: dashboard, workflows, runs, integrations
 packages/
   common/          — общие Pydantic-модели, логирование, шифрование секретов
-  integrations/    — клиенты Jira, Confluence, Gemini (httpx / google-genai)
-  workflows/triage/ — сама логика триажа: поиск US в Confluence, оценка Gemini, апдейт Jira
+  integrations/    — клиенты Jira, Confluence, Gemini, Azure DevOps (httpx / google-genai)
+  workflows/triage/ — логика триажа: поиск US в Confluence, оценка Gemini, апдейт Jira
+  workflows/review/ — логика PR-ревью и проверки фиксов через Gemini + анонимизация (anonymize.py)
+  workflows/upload_test_cases/ — резолв suite-цепочки по Confluence-предкам US и загрузка CSV в Azure DevOps
+scripts/           — CLI-обёртки над теми же workflow'ами для запуска без UI (см. "Запуск без UI (CLI)")
 ```
 
 ## Отличия от полного Trace2Quality
 
 Это упрощённый, самодостаточный срез — вот что сознательно убрано:
 
-- Интеграция с Azure DevOps и всё, что от неё зависит (Test Plans, coverage-анализ,
-  генерация тест-кейсов, CSV Fixer, orphan test cases и т.д.).
+- Всё, что связано с Azure DevOps Test Plans (coverage-анализ, генерация тест-кейсов,
+  CSV Fixer, orphan test cases и т.д.) — Azure DevOps здесь используется только для чтения
+  Pull Request'ов (diff, треды комментариев) и постинга комментариев/ответов.
 - Celery/Redis — фоновые задачи выполняются в обычном Python-потоке в рамках процесса
   приложения (для одного пользователя этого достаточно).
 - Alembic-миграции — таблицы SQLite создаются автоматически при старте приложения
   (`Base.metadata.create_all`), отдельный шаг миграции не нужен.
 - Composition/scheduling/webhooks — многошаговые цепочки workflow и cron-расписания.
+- Файловый кэш результатов Gemini между dry-run и apply (как в оригинальных
+  `scripts/review_pull_request.py` / `scripts/review_comment_fixes.py`) — здесь вместо
+  него результат каждого запуска один раз сохраняется как артефакт в БД, и «Apply»
+  читает его оттуда же, так что повторного запроса к Gemini между dry-run и apply
+  никогда не происходит.
 
 Если нужен полный функционал (coverage, генерация тест-кейсов из Confluence и т.д.) —
 обращайтесь к полному репозиторию Trace2Quality.
@@ -146,6 +270,7 @@ packages/
   ```
 - Не коммитьте `.env` и файл `data/triage_bugs.db` (они уже в `.gitignore`) — там могут
   оказаться реальные токены и данные багов.
-- Apply-действия (запись severity/impact/priority и переход статуса в Jira) выполняются
-  под учёткой, чей API-токен указан в настройках Jira — Jira атрибутирует изменения
-  именно этому аккаунту.
+- Apply-действия (запись severity/impact/priority и переход статуса в Jira; постинг
+  комментариев/ответов и переоткрытие тредов в Azure DevOps) выполняются под учёткой,
+  чей API-токен/PAT указан в настройках соответствующей интеграции — Jira и Azure DevOps
+  атрибутируют изменения именно этому аккаунту, отдельного «post as» механизма нет.

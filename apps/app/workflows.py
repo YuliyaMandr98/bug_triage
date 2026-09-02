@@ -18,7 +18,7 @@ from apps.app.database import (
 )
 from packages.common import IntegrationType, SecretEncryption, get_logger
 from packages.integrations import integration_registry
-from packages.workflows import triage
+from packages.workflows import review, triage, upload_test_cases
 
 logger = get_logger(__name__)
 
@@ -87,6 +87,18 @@ def _resolve_integration_config(session, provider_type: IntegrationType) -> dict
         return {
             "api_key": settings.gemini_api_key,
             "model": settings.gemini_model,
+        }
+    if provider_type == IntegrationType.AZURE_DEVOPS:
+        if loaded:
+            return {
+                "org_url": loaded.get("org_url") or settings.azure_devops_org_url,
+                "project": loaded.get("project") or settings.azure_devops_project,
+                "pat": loaded.get("pat") or settings.azure_devops_pat,
+            }
+        return {
+            "org_url": settings.azure_devops_org_url,
+            "project": settings.azure_devops_project,
+            "pat": settings.azure_devops_pat,
         }
     return {}
 
@@ -221,6 +233,101 @@ def run_workflow(run_id: str, workflow_key: str):
                 correlation_id=correlation_id,
             )
 
+        elif workflow_key in ("review_pull_request", "review_comment_fixes"):
+            azure_config = _resolve_integration_config(session, IntegrationType.AZURE_DEVOPS)
+            if params.get("project"):
+                azure_config["project"] = params["project"]
+            azure_client = integration_registry.get_client(IntegrationType.AZURE_DEVOPS, azure_config)
+            gemini_client = integration_registry.get_client(
+                IntegrationType.GEMINI,
+                _resolve_integration_config(session, IntegrationType.GEMINI),
+            )
+            repo = str(params.get("repo", ""))
+            pr_id = int(params.get("pr_id"))
+            no_anonymize = bool(params.get("no_anonymize", False))
+
+            if workflow_key == "review_pull_request":
+                log_step("INFO", f"Reviewing PR #{pr_id} in {repo}", correlation_id=correlation_id)
+                result = asyncio.run(
+                    review.run_review_pull_request_workflow(
+                        azure_client=azure_client,
+                        gemini_client=gemini_client,
+                        repo=repo,
+                        pr_id=pr_id,
+                        no_anonymize=no_anonymize,
+                        correlation_id=correlation_id,
+                        log_fn=lambda level, message: log_step(level, message, correlation_id=correlation_id),
+                    )
+                )
+            else:
+                log_step("INFO", f"Verifying comment fixes for PR #{pr_id} in {repo}", correlation_id=correlation_id)
+                result = asyncio.run(
+                    review.run_review_comment_fixes_workflow(
+                        azure_client=azure_client,
+                        gemini_client=gemini_client,
+                        repo=repo,
+                        pr_id=pr_id,
+                        no_anonymize=no_anonymize,
+                        correlation_id=correlation_id,
+                        log_fn=lambda level, message: log_step(level, message, correlation_id=correlation_id),
+                    )
+                )
+
+            if result.get("status") == "failed":
+                run.status = "failed"
+                run.error_message = result.get("error", "Workflow failed")
+                session.commit()
+                log_step("ERROR", f"Workflow {workflow_key} failed: {result.get('error')}", correlation_id=correlation_id)
+                return
+
+            workflow_result = result
+            log_step("INFO", f"Workflow {workflow_key} finished", correlation_id=correlation_id)
+
+        elif workflow_key == "upload_test_cases":
+            azure_client = integration_registry.get_client(
+                IntegrationType.AZURE_DEVOPS,
+                _resolve_integration_config(session, IntegrationType.AZURE_DEVOPS),
+            )
+            confluence_client = integration_registry.get_client(
+                IntegrationType.CONFLUENCE,
+                _resolve_integration_config(session, IntegrationType.CONFLUENCE),
+            )
+            log_step(
+                "INFO",
+                f"Uploading test cases: us={params.get('us')}, plan_id={params.get('plan_id')}, "
+                f"dry_run={params.get('dry_run', True)}, force={params.get('force', False)}",
+                correlation_id=correlation_id,
+            )
+            result = asyncio.run(
+                upload_test_cases.run_upload_test_cases_workflow(
+                    azure_client=azure_client,
+                    confluence_client=confluence_client,
+                    us=str(params.get("us", "")),
+                    plan_id=str(params.get("plan_id", "")),
+                    csv_text=str(params.get("csv_text", "")),
+                    specs_folder=str(params.get("specs_folder") or upload_test_cases.DEFAULT_SPECS_FOLDER_TITLE),
+                    admin_specs_folder_id=str(params.get("admin_specs_folder_id") or upload_test_cases.DEFAULT_ADMIN_SPECS_FOLDER_ID),
+                    admin_group_title=str(params.get("admin_group_title") or upload_test_cases.DEFAULT_ADMIN_GROUP_SUITE_TITLE),
+                    epic_suite_name=params.get("epic_suite_name") or None,
+                    us_suite_name=params.get("us_suite_name") or None,
+                    state=str(params.get("state") or upload_test_cases.DEFAULT_STATE),
+                    force=bool(params.get("force", False)),
+                    dry_run=bool(params.get("dry_run", True)),
+                    correlation_id=correlation_id,
+                    log_fn=lambda level, message: log_step(level, message, correlation_id=correlation_id),
+                )
+            )
+
+            if result.get("status") == "failed":
+                run.status = "failed"
+                run.error_message = result.get("error", "Workflow failed")
+                session.commit()
+                log_step("ERROR", f"Workflow {workflow_key} failed: {result.get('error')}", correlation_id=correlation_id)
+                return
+
+            workflow_result = result
+            log_step("INFO", f"Workflow {workflow_key} finished", correlation_id=correlation_id)
+
         else:
             log_step("WARNING", f"Unknown workflow: {workflow_key}", correlation_id=correlation_id)
             run.status = "failed"
@@ -233,6 +340,12 @@ def run_workflow(run_id: str, workflow_key: str):
             if workflow_key == "triage_bugs":
                 _persist_artifact(session, run_id, "triage_summary.json", workflow_result.get("summary", {}))
                 _persist_artifact(session, run_id, "per_issue_results.json", workflow_result.get("per_issue_results", []))
+            elif workflow_key == "review_pull_request":
+                _persist_artifact(session, run_id, "findings.json", workflow_result.get("findings", []))
+            elif workflow_key == "review_comment_fixes":
+                _persist_artifact(session, run_id, "comment_fix_results.json", workflow_result.get("results", []))
+            elif workflow_key == "upload_test_cases":
+                _persist_artifact(session, run_id, "upload_results.json", workflow_result.get("results", []))
 
         run.status = "succeeded"
         run.completed_at = _utc_now()

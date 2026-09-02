@@ -12,6 +12,7 @@ from apps.app.database import create_all_tables
 from packages.common import generate_correlation_id, get_logger
 from packages.common import IntegrationType
 from packages.integrations import integration_registry
+from packages.integrations.azure_devops import AzureDevOpsClient
 from packages.integrations.confluence import ConfluenceClient
 from packages.integrations.gemini import GeminiClient
 from packages.integrations.jira import JiraClient
@@ -22,6 +23,7 @@ logger = get_logger(__name__)
 integration_registry.register(IntegrationType.CONFLUENCE, ConfluenceClient)
 integration_registry.register(IntegrationType.JIRA, JiraClient)
 integration_registry.register(IntegrationType.GEMINI, GeminiClient)
+integration_registry.register(IntegrationType.AZURE_DEVOPS, AzureDevOpsClient)
 
 
 @asynccontextmanager
@@ -93,12 +95,15 @@ def create_app() -> FastAPI:
             </head>
             <body>
                 <h1>🚀 Triage Bugs Tool</h1>
-                <p>Jira bug triage via Confluence specs + Gemini (standalone extract of Trace2Quality)</p>
+                <p>Jira bug triage via Confluence specs + Gemini, plus Gemini-based Azure DevOps PR review (standalone extract of Trace2Quality)</p>
                 <h2>Quick Links</h2>
                 <ul>
                     <li><a href="/ui">💻 Dashboard</a></li>
                     <li><a href="/ui/integrations">🔌 Configure Integrations</a></li>
                     <li><a href="/ui/workflows/triage_bugs/run">🐛 Run Triage</a></li>
+                    <li><a href="/ui/workflows/review_pull_request/run">🔍 Review Pull Request</a></li>
+                    <li><a href="/ui/workflows/review_comment_fixes/run">✅ Review Comment Fixes</a></li>
+                    <li><a href="/ui/workflows/upload_test_cases/run">📤 Upload Test Cases</a></li>
                     <li><a href="/docs">📚 API Documentation (Swagger)</a></li>
                 </ul>
             </body>

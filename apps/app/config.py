@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     gemini_api_key: str = ""
     gemini_model: str = "gemini-2.0-flash"
 
+    # === Azure DevOps (used by the PR review workflows only) ===
+    azure_devops_org_url: str = "https://dev.azure.com/yourorg"
+    azure_devops_project: str = "YourProject"
+    azure_devops_pat: str = ""
+
     # === Storage ===
     artifact_storage_path: str = "./data/artifacts"
 

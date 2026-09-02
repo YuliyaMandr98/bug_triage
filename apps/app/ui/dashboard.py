@@ -92,6 +92,10 @@ async def dashboard(request: Request, db: Session = Depends(get_db)) -> str:
             .actions-title {{ font-size: 22px; font-weight: 700; margin-bottom: 8px; }}
             .actions-subtitle {{ color: #e9f3ff; margin-bottom: 16px; }}
             .action-buttons {{ display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }}
+            .action-buttons.five {{ grid-template-columns: repeat(5, minmax(0, 1fr)); }}
+            @media (max-width: 1400px) {{
+                .action-buttons.five {{ grid-template-columns: repeat(3, minmax(0, 1fr)); }}
+            }}
             .action-btn {{
                 display: block;
                 background: rgba(255, 255, 255, 0.15);
@@ -133,15 +137,27 @@ async def dashboard(request: Request, db: Session = Depends(get_db)) -> str:
 
             <div class="actions-block">
                 <div class="actions-title">Get Started</div>
-                <div class="actions-subtitle">Configure your integrations, then run a triage dry-run.</div>
-                <div class="action-buttons">
+                <div class="actions-subtitle">Configure your integrations, then run a dry-run.</div>
+                <div class="action-buttons five">
                     <a class="action-btn" href="/ui/integrations">
                         <span class="label">Configure Integrations</span>
-                        <span class="hint">Set up Jira, Confluence and Gemini credentials.</span>
+                        <span class="hint">Set up Jira, Confluence, Gemini and Azure DevOps credentials.</span>
                     </a>
                     <a class="action-btn" href="/ui/workflows/triage_bugs/run">
                         <span class="label">Triage Bugs</span>
                         <span class="hint">Analyze defects and classify severity/impact via Gemini.</span>
+                    </a>
+                    <a class="action-btn" href="/ui/workflows/review_pull_request/run">
+                        <span class="label">Review Pull Request</span>
+                        <span class="hint">Gemini reviews an Azure DevOps PR diff and posts line comments.</span>
+                    </a>
+                    <a class="action-btn" href="/ui/workflows/review_comment_fixes/run">
+                        <span class="label">Review Comment Fixes</span>
+                        <span class="hint">Verify whether "fixed" review threads were actually addressed.</span>
+                    </a>
+                    <a class="action-btn" href="/ui/workflows/upload_test_cases/run">
+                        <span class="label">Upload Test Cases</span>
+                        <span class="hint">Upload a reviewed CSV into the Web/Mobile/API Test Plan in Azure DevOps.</span>
                     </a>
                 </div>
             </div>

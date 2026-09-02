@@ -12,11 +12,15 @@ class IntegrationType(str, Enum):
     CONFLUENCE = "confluence"
     JIRA = "jira"
     GEMINI = "gemini"
+    AZURE_DEVOPS = "azure_devops"
 
 
 class WorkflowType(str, Enum):
     """Workflow identifiers."""
     TRIAGE_BUGS = "triage_bugs"
+    REVIEW_PULL_REQUEST = "review_pull_request"
+    REVIEW_COMMENT_FIXES = "review_comment_fixes"
+    UPLOAD_TEST_CASES = "upload_test_cases"
 
 
 class RunStatus(str, Enum):
@@ -46,6 +50,7 @@ class IntegrationConfig(BaseModel):
     email: Optional[str] = None
     base_url: Optional[str] = None
     model: Optional[str] = None
+    org_url: Optional[str] = None
     is_configured: bool = False
     status: IntegrationConnectionStatus = IntegrationConnectionStatus.UNCONFIGURED
     last_tested: Optional[datetime] = None
@@ -87,6 +92,32 @@ class TriageBugTicketsRunRequest(BaseModel):
     )
     batch_delay_seconds: int = Field(
         default=10, ge=0, le=60, description="Seconds to wait between Gemini API calls"
+    )
+
+
+class ReviewPullRequestRunRequest(BaseModel):
+    """Request payload for review_pull_request workflow."""
+
+    repo: str = Field(description="Azure DevOps repository name (or ID)")
+    pr_id: int = Field(description="Pull Request ID")
+    project: Optional[str] = Field(
+        default=None, description="Azure DevOps project (defaults to AZURE_DEVOPS_PROJECT)"
+    )
+    no_anonymize: bool = Field(
+        default=False, description="Skip anonymization of file content before sending it to Gemini"
+    )
+
+
+class ReviewCommentFixesRunRequest(BaseModel):
+    """Request payload for review_comment_fixes workflow."""
+
+    repo: str = Field(description="Azure DevOps repository name (or ID)")
+    pr_id: int = Field(description="Pull Request ID")
+    project: Optional[str] = Field(
+        default=None, description="Azure DevOps project (defaults to AZURE_DEVOPS_PROJECT)"
+    )
+    no_anonymize: bool = Field(
+        default=False, description="Skip anonymization of code/comments before sending them to Gemini"
     )
 
 

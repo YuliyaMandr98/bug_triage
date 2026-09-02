@@ -1,4 +1,4 @@
-"""Workflow API endpoints (triage_bugs only)"""
+"""Workflow API endpoints (triage_bugs, review_pull_request, review_comment_fixes, upload_test_cases)"""
 
 import asyncio
 import json
@@ -6,7 +6,7 @@ from datetime import datetime
 from pathlib import Path
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -15,12 +15,16 @@ from apps.app.database import ArtifactModel, WorkflowRunModel, get_session_facto
 from apps.app.workflows import _resolve_integration_config, enqueue_workflow
 from packages.common import (
     IntegrationType,
+    ReviewCommentFixesRunRequest,
+    ReviewPullRequestRunRequest,
     TriageBugTicketsRunRequest,
     WorkflowType,
     get_logger,
 )
 from packages.integrations import integration_registry
+from packages.workflows import review as review_workflow
 from packages.workflows import triage as triage_workflow
+from packages.workflows import upload_test_cases as upload_workflow
 
 logger = get_logger(__name__)
 
@@ -226,3 +230,292 @@ async def apply_triage_issues(
         "error_count": len(errors),
         "add_comment": bool(add_comment),
     }
+
+
+# ── Pull Request code review (Gemini) ─────────────────────────────────────────
+
+
+@router.post("/review-pull-request/runs")
+async def create_review_pull_request_run(
+    payload: ReviewPullRequestRunRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Create a review_pull_request run. Always a dry-run: findings are analyzed and
+    persisted as an artifact but never posted to Azure DevOps. Use
+    /review-pull-request/apply-comments to publish a run's findings.
+    """
+    correlation_id = getattr(request.state, "correlation_id", None)
+
+    run_id = str(uuid4())
+    accepted_params = payload.model_dump()
+
+    run = WorkflowRunModel(
+        id=run_id,
+        workflow_key="review_pull_request",
+        parameters=accepted_params,
+        dry_run="1",
+        status="queued",
+    )
+    db.add(run)
+    db.commit()
+
+    queue_info = enqueue_workflow(run_id, "review_pull_request")
+
+    logger.info(
+        "Created review_pull_request run",
+        correlation_id=correlation_id,
+        extra={"run_id": run_id, "repo": payload.repo, "pr_id": payload.pr_id},
+    )
+
+    return {
+        "run_id": run_id,
+        "workflow_key": "review_pull_request",
+        "status": "queued",
+        "accepted_parameters": accepted_params,
+        "queue": queue_info.get("queue"),
+        "task_id": queue_info.get("task_id"),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+
+class _ApplyReviewCommentsRequest(BaseModel):
+    run_id: str
+    findings: list[dict] | None = None  # None = post every finding from the run
+
+
+@router.post("/review-pull-request/apply-comments")
+async def apply_review_comments(
+    payload: _ApplyReviewCommentsRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Post findings from an existing review_pull_request dry-run as PR line comments."""
+    run = db.query(WorkflowRunModel).filter(WorkflowRunModel.id == payload.run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run not found: {payload.run_id}")
+    if run.workflow_key != "review_pull_request":
+        raise HTTPException(status_code=400, detail="Run is not a review_pull_request run")
+
+    result_artifact = (
+        db.query(ArtifactModel)
+        .filter(ArtifactModel.run_id == payload.run_id, ArtifactModel.filename == "workflow_result.json")
+        .first()
+    )
+    if not result_artifact:
+        raise HTTPException(status_code=404, detail="workflow_result.json artifact not found for this run")
+
+    settings = get_settings()
+    artifact_path = Path(settings.artifact_storage_path) / result_artifact.storage_path
+    if not artifact_path.exists():
+        raise HTTPException(status_code=404, detail="Artifact file missing from storage")
+
+    workflow_result: dict = json.loads(artifact_path.read_text(encoding="utf-8"))
+    files = workflow_result.get("files", [])
+    findings = payload.findings if payload.findings is not None else workflow_result.get("findings", [])
+    if not findings:
+        return {"posted": [], "errors": [], "posted_count": 0, "error_count": 0, "message": "No findings to post"}
+
+    params: dict = run.parameters if isinstance(run.parameters, dict) else json.loads(run.parameters or "{}")
+    azure_config = _resolve_integration_config(db, IntegrationType.AZURE_DEVOPS)
+    if params.get("project"):
+        azure_config["project"] = params["project"]
+    azure_client = integration_registry.get_client(IntegrationType.AZURE_DEVOPS, azure_config)
+
+    try:
+        result = await review_workflow.post_review_comments(
+            azure_client, str(params.get("repo")), int(params.get("pr_id")), findings, files
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Apply failed: {exc}")
+
+    return result
+
+
+# ── Comment-fix verification (Gemini) ─────────────────────────────────────────
+
+
+@router.post("/review-comment-fixes/runs")
+async def create_review_comment_fixes_run(
+    payload: ReviewCommentFixesRunRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Create a review_comment_fixes run. Always a dry-run: verdicts are analyzed and
+    persisted as an artifact but no reply is posted and no thread is reopened. Use
+    /review-comment-fixes/apply-replies to act on a run's "not_fixed" threads.
+    """
+    correlation_id = getattr(request.state, "correlation_id", None)
+
+    run_id = str(uuid4())
+    accepted_params = payload.model_dump()
+
+    run = WorkflowRunModel(
+        id=run_id,
+        workflow_key="review_comment_fixes",
+        parameters=accepted_params,
+        dry_run="1",
+        status="queued",
+    )
+    db.add(run)
+    db.commit()
+
+    queue_info = enqueue_workflow(run_id, "review_comment_fixes")
+
+    logger.info(
+        "Created review_comment_fixes run",
+        correlation_id=correlation_id,
+        extra={"run_id": run_id, "repo": payload.repo, "pr_id": payload.pr_id},
+    )
+
+    return {
+        "run_id": run_id,
+        "workflow_key": "review_comment_fixes",
+        "status": "queued",
+        "accepted_parameters": accepted_params,
+        "queue": queue_info.get("queue"),
+        "task_id": queue_info.get("task_id"),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+
+class _ApplyCommentFixRequest(BaseModel):
+    run_id: str
+    thread_ids: list[int] | None = None  # None = act on every not_fixed thread from the run
+
+
+@router.post("/review-comment-fixes/apply-replies")
+async def apply_review_comment_fixes(
+    payload: _ApplyCommentFixRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+) -> dict:
+    """Reply into (and reopen) threads from an existing review_comment_fixes dry-run
+    that Gemini flagged as not actually fixed.
+    """
+    run = db.query(WorkflowRunModel).filter(WorkflowRunModel.id == payload.run_id).first()
+    if not run:
+        raise HTTPException(status_code=404, detail=f"Run not found: {payload.run_id}")
+    if run.workflow_key != "review_comment_fixes":
+        raise HTTPException(status_code=400, detail="Run is not a review_comment_fixes run")
+
+    result_artifact = (
+        db.query(ArtifactModel)
+        .filter(ArtifactModel.run_id == payload.run_id, ArtifactModel.filename == "workflow_result.json")
+        .first()
+    )
+    if not result_artifact:
+        raise HTTPException(status_code=404, detail="workflow_result.json artifact not found for this run")
+
+    settings = get_settings()
+    artifact_path = Path(settings.artifact_storage_path) / result_artifact.storage_path
+    if not artifact_path.exists():
+        raise HTTPException(status_code=404, detail="Artifact file missing from storage")
+
+    workflow_result: dict = json.loads(artifact_path.read_text(encoding="utf-8"))
+    contexts = workflow_result.get("contexts", [])
+    results = workflow_result.get("results", [])
+
+    params: dict = run.parameters if isinstance(run.parameters, dict) else json.loads(run.parameters or "{}")
+    azure_config = _resolve_integration_config(db, IntegrationType.AZURE_DEVOPS)
+    if params.get("project"):
+        azure_config["project"] = params["project"]
+    azure_client = integration_registry.get_client(IntegrationType.AZURE_DEVOPS, azure_config)
+
+    try:
+        result = await review_workflow.apply_comment_fix_results(
+            azure_client, str(params.get("repo")), int(params.get("pr_id")),
+            contexts, results, thread_ids=payload.thread_ids,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"Apply failed: {exc}")
+
+    return result
+
+
+# ── Upload reviewed test cases into Azure DevOps ──────────────────────────────
+
+
+@router.post("/upload-test-cases/runs")
+async def create_upload_test_cases_run(
+    request: Request,
+    db: Session = Depends(get_db),
+    us: str = Form(...),
+    plan_id: str = Form(...),
+    csv_file: UploadFile = File(...),
+    specs_folder: str = Form(upload_workflow.DEFAULT_SPECS_FOLDER_TITLE),
+    admin_specs_folder_id: str = Form(upload_workflow.DEFAULT_ADMIN_SPECS_FOLDER_ID),
+    admin_group_title: str = Form(upload_workflow.DEFAULT_ADMIN_GROUP_SUITE_TITLE),
+    epic_suite_name: str = Form(""),
+    us_suite_name: str = Form(""),
+    state: str = Form(upload_workflow.DEFAULT_STATE),
+    force: bool = Form(False),
+    dry_run: bool = Form(True),
+) -> dict:
+    """Create an upload_test_cases run from a reviewed test case CSV.
+
+    `plan_id` must be one of the configured Test Plan ids (see
+    GET /api/workflows/upload-test-cases/plans). Defaults to a dry-run that
+    resolves the suite chain and previews the parsed CSV without writing
+    anything to Azure DevOps.
+    """
+    correlation_id = getattr(request.state, "correlation_id", None)
+
+    valid_plan_ids = {p["plan_id"] for p in upload_workflow.TEST_PLANS.values()}
+    if plan_id not in valid_plan_ids:
+        raise HTTPException(status_code=400, detail=f"Unknown plan_id: {plan_id}. Valid: {sorted(valid_plan_ids)}")
+
+    csv_bytes = await csv_file.read()
+    try:
+        csv_text = csv_bytes.decode("utf-8-sig")
+    except UnicodeDecodeError:
+        raise HTTPException(status_code=400, detail="CSV file must be UTF-8 encoded")
+
+    run_id = str(uuid4())
+    accepted_params = {
+        "us": us,
+        "plan_id": plan_id,
+        "csv_text": csv_text,
+        "specs_folder": specs_folder,
+        "admin_specs_folder_id": admin_specs_folder_id,
+        "admin_group_title": admin_group_title,
+        "epic_suite_name": epic_suite_name or None,
+        "us_suite_name": us_suite_name or None,
+        "state": state,
+        "force": force,
+        "dry_run": dry_run,
+    }
+
+    run = WorkflowRunModel(
+        id=run_id,
+        workflow_key="upload_test_cases",
+        parameters=accepted_params,
+        dry_run="1" if dry_run else "0",
+        status="queued",
+    )
+    db.add(run)
+    db.commit()
+
+    queue_info = enqueue_workflow(run_id, "upload_test_cases")
+
+    logger.info(
+        "Created upload_test_cases run",
+        correlation_id=correlation_id,
+        extra={"run_id": run_id, "us": us, "plan_id": plan_id, "dry_run": dry_run},
+    )
+
+    return {
+        "run_id": run_id,
+        "workflow_key": "upload_test_cases",
+        "status": "queued",
+        "accepted_parameters": {k: v for k, v in accepted_params.items() if k != "csv_text"},
+        "queue": queue_info.get("queue"),
+        "task_id": queue_info.get("task_id"),
+        "created_at": datetime.utcnow().isoformat(),
+    }
+
+
+@router.get("/upload-test-cases/plans")
+async def list_upload_test_case_plans() -> dict:
+    """List the Test Plans available for upload (key, plan_id, label)."""
+    return {"plans": [{"key": k, **v} for k, v in upload_workflow.TEST_PLANS.items()]}
