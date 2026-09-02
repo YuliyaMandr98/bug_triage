@@ -1,6 +1,5 @@
 """Integration settings API endpoints"""
 
-import ast
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, HTTPException, Request
@@ -8,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from apps.app.database import IntegrationConfigModel, get_session_factory
 from apps.app.config import get_settings
+from apps.app.workflows import _resolve_integration_config
 from packages.common import (
     IntegrationConfig,
     IntegrationConnectionStatus,
@@ -31,15 +31,6 @@ def get_db(request: Request) -> Session:
         yield session
     finally:
         session.close()
-
-
-def _load_integration_config(config_record: IntegrationConfigModel) -> dict:
-    """Decrypt and deserialize provider config from storage."""
-    enc = SecretEncryption(get_settings().app_encryption_key)
-    try:
-        return ast.literal_eval(enc.decrypt(config_record.config_encrypted))
-    except Exception:
-        return {}
 
 
 @router.get("")
@@ -80,18 +71,35 @@ async def test_connection(
         logger.warning(f"Invalid integration type: {integration_type}", correlation_id=correlation_id)
         raise HTTPException(status_code=400, detail=f"Invalid integration type: {integration_type}")
 
-    config_record = db.query(IntegrationConfigModel).filter(
-        IntegrationConfigModel.type == provider_type
-    ).first()
-
-    if not config_record:
+    # Resolve config the same way the real workflow run does: DB-saved config
+    # takes precedence, falling back to .env — so this button reflects
+    # whichever credentials a run would actually use.
+    config_data = _resolve_integration_config(db, provider_type)
+    if not any(config_data.values()):
         logger.warning(
             f"Integration config not found: {integration_type}", correlation_id=correlation_id
         )
-        return {"success": False, "error": "Integration not configured"}
+        return {
+            "success": False,
+            "error": "Integration not configured — set values here or in .env",
+        }
 
-    # Decrypt and reconstruct config
-    config_data = _load_integration_config(config_record)
+    config_record = db.query(IntegrationConfigModel).filter(
+        IntegrationConfigModel.type == provider_type
+    ).first()
+    if not config_record:
+        from uuid import uuid4
+        # No DB override exists — config_data came from .env. Store an empty
+        # encrypted config (not the resolved .env values) so this row only
+        # tracks test status and doesn't start shadowing future .env edits.
+        enc = SecretEncryption(get_settings().app_encryption_key)
+        config_record = IntegrationConfigModel(
+            id=str(uuid4()),
+            type=provider_type,
+            config_encrypted=enc.encrypt("{}"),
+            status="unconfigured",
+        )
+        db.add(config_record)
 
     try:
         client = integration_registry.get_client(provider_type, config_data)
