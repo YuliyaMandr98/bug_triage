@@ -38,9 +38,12 @@ def _extract_story_ref(issue_title: str) -> Optional[tuple[str, str]]:
     spaces that can collide on the same number (e.g. both 'US-20.1.1' and
     'AUS-20.1.1' exist), so the prefix is captured and matched exactly rather
     than being normalized away.
+    The separator also accepts typographic dash variants (non-breaking hyphen,
+    en dash, em dash) that sometimes end up in titles via copy-paste, in
+    addition to the plain ASCII hyphen.
     Returns (prefix, dotted_number) or None if no reference is found.
     """
-    match = re.search(r"(?:^|[^\w])(AUS|US)[:\s-]*([\d]+(?:\.[\d]+)*)", issue_title)
+    match = re.search(r"(?:^|[^\w])(AUS|US)[:\s\-‑–—]*([\d]+(?:\.[\d]+)*)", issue_title)
     if not match:
         return None
     return match.group(1), match.group(2)
