@@ -124,10 +124,8 @@ async def dashboard(request: Request, db: Session = Depends(get_db)) -> str:
             <h1>🐛 Triage Bugs Tool</h1>
             <ul>
                 <li><a href="/ui">Dashboard</a></li>
-                <li><a href="/ui/workflows">Workflows</a></li>
                 <li><a href="/ui/runs">Runs</a></li>
                 <li><a href="/ui/integrations">Integrations</a></li>
-                <li><a href="/docs">API Docs</a></li>
             </ul>
         </nav>
 

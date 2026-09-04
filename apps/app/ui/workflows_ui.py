@@ -400,7 +400,6 @@ def _render_triage_bugs_page(
             <h1>🐛 Triage Bugs Tool</h1>
             <ul>
                 <li><a href="/ui">Dashboard</a></li>
-                <li><a href="/ui/workflows">Workflows</a></li>
                 <li><a href="/ui/runs">Runs</a></li>
                 <li><a href="/ui/integrations">Integrations</a></li>
             </ul>
@@ -477,7 +476,6 @@ _REVIEW_NAV = """
     <h1>🐛 Triage Bugs Tool</h1>
     <ul>
         <li><a href="/ui">Dashboard</a></li>
-        <li><a href="/ui/workflows">Workflows</a></li>
         <li><a href="/ui/runs">Runs</a></li>
         <li><a href="/ui/integrations">Integrations</a></li>
     </ul>
@@ -1247,7 +1245,6 @@ async def workflows_page(request: Request) -> str:
             <h1>🐛 Triage Bugs Tool</h1>
             <ul>
                 <li><a href="/ui">Dashboard</a></li>
-                <li><a href="/ui/workflows">Workflows</a></li>
                 <li><a href="/ui/runs">Runs</a></li>
                 <li><a href="/ui/integrations">Integrations</a></li>
             </ul>
