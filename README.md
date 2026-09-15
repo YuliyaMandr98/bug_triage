@@ -16,9 +16,14 @@ Web/Mobile/API — с автоматическим резолвом suite-цеп
 `todo`/`жду` или ссылок на баги, просит Gemini разобраться в настоящей причине каждого
 пропуска и проверяет упомянутые баги в Jira — отдельно показывая тесты, чей баг уже закрыт.
 
+Плюс read-only **Review Test Cases**: проверяет тест-кейсы из приложенного файла для одной
+User Story (web/mobile/API — выбирается в выпадающем списке) на полноту покрытия требований,
+валидаций, альтернативных сценариев и edge-кейсов, сверяясь со спецификацией в Confluence
+(и, для API, с технической реализацией), которые указываются ссылкой на страницу.
+
 Это выделенная часть проекта **Trace2Quality** — функционал Triage Bugs, PR-ревью и загрузки
-тест-кейсов, плюс всё, от чего они зависят (без coverage-анализа, автогенерации тест-кейсов
-из спецификаций и прочего).
+тест-кейсов, плюс всё, от чего они зависят (без автогенерации тест-кейсов из спецификаций,
+полного coverage-анализа по всему Test Plan'у и прочего).
 
 ## Требования
 
@@ -221,6 +226,28 @@ DevOps) — публикация комментариев/ответов это 
    **TODO без привязки к багу** и **причина не ясна**. Артефакты рана включают
    `workflow_result.json` и человекочитаемый `skipped_tests_report.md`.
 
+### Review Test Cases (ревью тест-кейсов на полноту покрытия)
+
+Только чтение — ничего не пишет ни в Confluence, ни куда-либо ещё.
+
+1. Откройте **http://localhost:8000/ui/workflows/review_test_cases/run**.
+2. Выберите **тип тест-кейсов** из выпадающего списка: Web, Mobile или API — от этого
+   зависит, на что именно Gemini обращает внимание при ревью (для web/mobile — валидация
+   форм, альтернативные UI-сценарии, работа в фоне/офлайн и т.д.; для API — коды ответов,
+   структура ошибок, аутентификация/авторизация, идемпотентность и т.д.).
+3. Укажите номер User Story (используется только для подписи отчёта), ссылку (или ID
+   страницы) на спецификацию в Confluence и приложите файл с тест-кейсами (любой текстовый
+   формат — список, CSV-экспорт из Azure DevOps и т.д., UTF-8).
+4. Для типа **API** дополнительно обязательна ссылка на страницу с технической реализацией
+   спецификации в Confluence — воркфлоу сверяет тест-кейсы и с ней тоже.
+5. Воркфлоу сам не ищет страницы в Confluence по номеру User Story — ссылки на
+   спецификацию и (для API) техническую реализацию нужно вставить вручную.
+6. Результат — текст, разбитый на блоки: **непокрытые требования / критерии приёмки**,
+   **недостающие проверки валидации**, **недостающие альтернативные сценарии**,
+   **недостающие edge-кейсы**, **неоднозначности и риски** и **что уже хорошо покрыто**,
+   плюс краткая итоговая оценка. Артефакты рана включают `workflow_result.json` и
+   человекочитаемый `review_report.txt`.
+
 ## Запуск без UI (CLI)
 
 Каждый workflow можно запустить напрямую из терминала, без веб-интерфейса и сервера —
@@ -249,6 +276,10 @@ make upload-test-cases ARGS="--us 20.1.1 --plan web --csv path/to/cases.csv --ap
 # Аудит skip/todo/баг-тестов в автотестах (только чтение)
 make audit-skipped-tests
 make audit-skipped-tests ARGS="--tests-root /path/to/tests"
+
+# Ревью тест-кейсов на полноту покрытия (только чтение; --test-type: web / mobile / api)
+make review-test-cases ARGS="--us 20.1.1 --test-type web --spec-url 'https://.../pages/123456789/US-20.1.1' --test-cases-file cases.txt"
+make review-test-cases ARGS="--us 20.1.1 --test-type api --spec-url 'https://.../pages/123456789/...' --tech-impl-url 'https://.../pages/987654321/...' --test-cases-file cases.csv"
 ```
 
 Полный список опций каждого скрипта — через `--help`, например:
@@ -262,6 +293,7 @@ PYTHONPATH=$(pwd) venv/bin/python scripts/review_pull_request.py --repo my-repo 
 PYTHONPATH=$(pwd) venv/bin/python scripts/review_comment_fixes.py --repo my-repo --pr 1234
 PYTHONPATH=$(pwd) venv/bin/python scripts/upload_test_cases.py --us 20.1.1 --plan web --csv path/to/cases.csv
 PYTHONPATH=$(pwd) venv/bin/python scripts/audit_skipped_tests.py --tests-root /path/to/tests
+PYTHONPATH=$(pwd) venv/bin/python scripts/review_test_cases.py --us 20.1.1 --test-type web --spec-url "https://.../pages/123456789/..." --test-cases-file cases.txt
 ```
 
 Результат каждого запуска сохраняется в `scripts/data/*.json` (путь можно переопределить
@@ -285,6 +317,7 @@ packages/
   workflows/review/ — логика PR-ревью и проверки фиксов через Gemini + анонимизация (anonymize.py)
   workflows/upload_test_cases/ — резолв suite-цепочки по Confluence-предкам US и загрузка CSV в Azure DevOps
   workflows/skipped_tests/ — сканер *.spec.ts на skip/todo/баг-маркеры + классификация Gemini + проверка Jira
+  workflows/review_test_cases/ — ревью вставленных тест-кейсов на полноту покрытия по спецификации Confluence + Gemini
 scripts/           — CLI-обёртки над теми же workflow'ами для запуска без UI (см. "Запуск без UI (CLI)")
 ```
 
