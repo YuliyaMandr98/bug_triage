@@ -116,6 +116,11 @@ class GeminiClient(IntegrationClient):
               недоступность стороннего сервиса, разные разрешения экрана и масштабирование браузера.
             - Доступность (клавиатурная навигация, сообщения об ошибках), если это прослеживается
               в требованиях.
+
+            ВАЖНО: наличие тест-кейсов на локализацию и на тёмную тему проверяется отдельно,
+            автоматической проверкой вне этого анализа — НЕ указывай их отсутствие сам ни в
+            missing_requirements, ни в других категориях, даже если не видишь таких тест-кейсов
+            среди присланных.
             """
         ),
         "mobile": textwrap.dedent(
@@ -131,6 +136,11 @@ class GeminiClient(IntegrationClient):
               повторного запроса разрешения.
             - Edge-кейсы: разные размеры экрана и ОС (iOS/Android, версии), офлайн-режим, низкий заряд
               батареи/память, push-уведомления, deep links.
+
+            ВАЖНО: наличие тест-кейсов на локализацию и на тёмную тему проверяется отдельно,
+            автоматической проверкой вне этого анализа — НЕ указывай их отсутствие сам ни в
+            missing_requirements, ни в других категориях, даже если не видишь таких тест-кейсов
+            среди присланных.
             """
         ),
         "api": textwrap.dedent(
@@ -578,6 +588,178 @@ If NOT a real bug, set priority to "Low" and explain why in reasoning (in Russia
             "priority": "Medium",
             "reasoning": "Assessment failed",
         }
+
+    async def classify_business_priority(self, us_title: str, us_text: str) -> dict[str, Any]:
+        """Classify a User Story's Azure DevOps test-case priority tier (P0/P1/P2)
+        from its Confluence spec, per the team's business-criticality rubric.
+
+        Returns a dict with `tier` ("P0" | "P1" | "P2") and `reasoning` (Russian).
+        Falls back to "P1" (a neutral middle tier, avoids silently deprioritizing
+        an unclassifiable but potentially critical feature) when the API key is
+        missing or the call fails.
+        """
+        if not self.api_key:
+            return {"tier": "P1", "reasoning": "Gemini API key not configured"}
+
+        prompt = textwrap.dedent(f"""\
+            Ты - QA-лид, определяющий бизнес-приоритет тестирования (P0/P1/P2) для
+            функциональности, описанной в спецификации ниже, строго по следующему
+            правилу классификации:
+
+            P0 - Critical. Фичи с прямым движением денег клиента, аутентификацией,
+            необратимыми операциями (платежи, переводы, погашение кредита, открытие
+            вклада). Получают Layer 1 в первую очередь, Layer 2 - по возможности.
+
+            P1 - High. Фичи, без которых приложение неюзабельно (логин, главный
+            экран, просмотр продуктов, профиль). Layer 1 обязателен, Layer 2/3 - по
+            остатку времени.
+
+            P2 - Medium/Low. Второстепенные/косметические/settings-фичи, а также
+            фичи, явно ИСКЛЮЧЁННЫЕ из текущего релиза/цикла тестирования (например,
+            статус говорит "перенесено на следующий релиз", "отменено", "не входит
+            в этот релиз"). Тестируются в последнюю очередь либо переносятся на
+            пост-релизный цикл.
+
+            ВАЖНО про статус разработки: тест-кейсы пишутся ЗАРАНЕЕ, пока разработка
+            ещё идёт, а само тестирование начнётся только после того, как функционал
+            будет полностью готов. Поэтому текущий статус реализации - "Design",
+            "Design in progress", "BE Development", "FE is blocked", "In Progress" и
+            т.п. - НЕ является основанием для P2 сам по себе: оценивай тир по тому,
+            каким будет функционал, когда он будет полностью готов к тестированию, а
+            не по тому, на каком этапе разработки он находится сейчас. В P2 из-за
+            статуса понижай только если спецификация явно говорит, что фича не войдёт
+            в текущий релиз/цикл тестирования вообще (перенесена на следующий релиз,
+            отменена, вне скоупа) - это другое, чем "ещё не реализовано".
+
+            Название User Story: {us_title}
+
+            Текст спецификации (Confluence):
+            {us_text[:8000]}
+
+            Определи, к какому тиру относится эта функциональность, строго следуя
+            правилу выше.
+
+            Ответь ТОЛЬКО валидным JSON (без markdown):
+            {{
+                "tier": "P0" or "P1" or "P2",
+                "reasoning": "Краткое объяснение на русском языке, 1-2 предложения"
+            }}""")
+
+        try:
+            text = await self._generate_with_retry(
+                prompt, max_attempts=6, base_backoff_seconds=20,
+            )
+            if text:
+                result = self._parse_json(text)
+                tier = result.get("tier", "P1")
+                if tier not in ("P0", "P1", "P2"):
+                    tier = "P1"
+                return {"tier": tier, "reasoning": str(result.get("reasoning", ""))}
+        except Exception as e:
+            logger.error(f"Gemini business-priority classification failed: {str(e)}")
+            return {"tier": "P1", "reasoning": f"Оценка не выполнена: {e}"}
+
+        return {"tier": "P1", "reasoning": "Classification failed"}
+
+    async def classify_test_case_priorities(
+        self, us_title: str, business_tier: str, business_priority: str, test_cases: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Classify each test case's own Azure DevOps Priority within a feature
+        already tiered P0/P1/P2 (via classify_business_priority) - not every
+        test case in a critical feature is equally critical: a P0 payments
+        feature's happy-path test is High, but a cosmetic label-wording check
+        in the same feature isn't.
+
+        `test_cases` is a list of {"id": str, "title": str, "steps_text": str}.
+        Returns a list of {"id": str, "priority": "High"|"Medium"|"Low",
+        "reasoning": str (Russian)}, one per input test case (matched back to
+        callers by "id", not position). Falls back to `business_priority` for
+        every test case (the old blanket behavior) when the API key is
+        missing, the call fails, or a given id doesn't come back at all.
+        """
+        if not self.api_key or not test_cases:
+            return [
+                {"id": tc["id"], "priority": business_priority, "reasoning": "Gemini API key not configured"}
+                for tc in test_cases
+            ]
+
+        items_text = "\n\n".join(
+            f"id={tc['id']}\nНазвание: {tc['title']}\nШаги: {(tc.get('steps_text') or '')[:600] or '(нет шагов)'}"
+            for tc in test_cases
+        )
+
+        prompt = textwrap.dedent(f"""\
+            Ты - QA-лид, определяющий индивидуальный приоритет (Azure DevOps
+            Priority: High/Medium/Low) для каждого тест-кейса внутри одной
+            фичи.
+
+            Фича: "{us_title}"
+            Общий бизнес-тир фичи: {business_tier} (соответствует Azure DevOps
+            Priority = {business_priority} для её ОСНОВНОГО/критического
+            сценария).
+
+            Не все тест-кейсы внутри одной фичи одинаково важны:
+            - Позитивные (happy path) сценарии, проверяющие ИМЕННО то основное
+              поведение, из-за которого фича получила тир {business_tier}, -
+              получают приоритет {business_priority} (как у самой фичи).
+            - Негативные/валидационные/граничные/edge-сценарии, как правило,
+              на один уровень НИЖЕ (High -> Medium, Medium -> Low), кроме
+              случаев, когда сам такой сценарий защищает что-то критическое
+              (например, проверка безопасности/авторизации в P0-фиче остаётся
+              High).
+            - Чисто второстепенные/косметические проверки (тексты сообщений,
+              форматирование, мелкие UI-детали) - Low, независимо от тира
+              фичи.
+
+            Приоритет тест-кейса НЕ должен превышать {business_priority} - тир
+            фичи это потолок, а не пол: внутри фичи можно и нужно понижать
+            приоритет менее важных сценариев.
+
+            Тест-кейсы:
+            {items_text}
+
+            Ответь ТОЛЬКО валидным JSON (без markdown) - массив, один объект
+            на каждый тест-кейс:
+            [
+              {{
+                "id": "<тот же id>",
+                "priority": "High" or "Medium" or "Low",
+                "reasoning": "Краткое объяснение на русском языке, 1 предложение"
+              }},
+              ...
+            ]
+
+            Верни ровно {len(test_cases)} объектов, по одному на каждый id выше.""")
+
+        try:
+            text = await self._generate_with_retry(
+                prompt, max_attempts=6, base_backoff_seconds=20,
+            )
+            if text:
+                parsed = self._parse_json(text)
+                if isinstance(parsed, list):
+                    by_id: dict[str, dict[str, Any]] = {}
+                    for item in parsed:
+                        tc_id = str(item.get("id", ""))
+                        priority = item.get("priority", business_priority)
+                        if priority not in ("High", "Medium", "Low"):
+                            priority = business_priority
+                        by_id[tc_id] = {"id": tc_id, "priority": priority, "reasoning": str(item.get("reasoning", ""))}
+                    return [
+                        by_id.get(tc["id"]) or {"id": tc["id"], "priority": business_priority, "reasoning": "Не вернулось от LLM"}
+                        for tc in test_cases
+                    ]
+        except Exception as e:
+            logger.error(f"Gemini test-case priority classification failed: {str(e)}")
+            return [
+                {"id": tc["id"], "priority": business_priority, "reasoning": f"Оценка не выполнена: {e}"}
+                for tc in test_cases
+            ]
+
+        return [
+            {"id": tc["id"], "priority": business_priority, "reasoning": "Classification failed"}
+            for tc in test_cases
+        ]
 
     async def review_test_case_coverage(
         self,
