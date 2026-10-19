@@ -249,6 +249,18 @@ LEGACY_POSITION_BY_TITLE = {
     "Opened Bugs Total": (TS_COL0, TS_TOTAL_START, TS_ROW_BUDGET, TS_COL_BUDGET),
 }
 
+# One-time cleanup, per explicit user decision (2026-10-19): column G, rows
+# 3-15 / 28-39 / 47-58, holds leftover VLOOKUP formulas from this tab's
+# ORIGINAL file (e.g. `=IFERROR(VLOOKUP(A3, $A$3:$E$13, 5, FALSE),"")`) that
+# mirror each epic's own "T:" total back into column G for some original
+# presentation purpose - this workflow never writes to column G at all, so
+# they linger untouched forever. Confirmed stale: they're hardcoded to a
+# ~11-row range ($A$3:$E$13 etc.) from when this tab tracked far fewer
+# epics than the ~19 it has now, so rows beyond that range have no formula
+# at all and the ones that DO exist can reference the wrong epic once
+# today's live epic list reorders Table1/Table2's rows.
+LEGACY_COLUMN_G_ROW_RANGES = [(3, 15), (28, 39), (47, 58)]
+
 
 def _col_letter(col0: int) -> str:
     col0 += 1
@@ -742,6 +754,21 @@ async def run_bugs_per_epics_report_workflow(
                 sheet_id, LEGACY_TABLE3_CLEAR_FROM_ROW - 1, LEGACY_TABLE3_CLEAR_ROWS, SNAPSHOT_COL0, LEGACY_TABLE3_COL_BUDGET
             )
             sheets_client.unmerge_row_band(sheet_id, LEGACY_TABLE3_TITLE_ROW - 1, 1)
+
+        # One-time cleanup, per explicit user decision: column G's leftover
+        # VLOOKUP formulas (see LEGACY_COLUMN_G_ROW_RANGES) - checked via a
+        # marker read on the first range's own first cell so this is a
+        # no-op on every run after the first. Deliberately narrow, exact
+        # row ranges (not a wide sweep) - column G also holds this run's OWN
+        # legitimate "Opened Mobile bug" data from the new Comparison table
+        # (rows 82+, within TABLE3_START's own range) and must not be
+        # touched.
+        g_col_letter = _col_letter(SNAPSHOT_COL0 + 6)
+        legacy_g_marker = sheets_client.read_values(sheet_title, f"{g_col_letter}{LEGACY_COLUMN_G_ROW_RANGES[0][0]}:{g_col_letter}{LEGACY_COLUMN_G_ROW_RANGES[0][0]}")
+        if legacy_g_marker and legacy_g_marker[0] and legacy_g_marker[0][0] not in (None, ""):
+            for g_row_start, g_row_end in LEGACY_COLUMN_G_ROW_RANGES:
+                sheets_client.clear_values(sheet_title, f"{g_col_letter}{g_row_start}:{g_col_letter}{g_row_end}")
+                sheets_client.clear_formatting(sheet_id, g_row_start - 1, g_row_end - g_row_start + 1, SNAPSHOT_COL0 + 6, 1)
 
         # Table 1: Opened Bugs (current status) - fixed position, never moves
         sheets_client.clear_values(
