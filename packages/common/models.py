@@ -13,6 +13,7 @@ class IntegrationType(str, Enum):
     JIRA = "jira"
     GEMINI = "gemini"
     AZURE_DEVOPS = "azure_devops"
+    GOOGLE_SHEETS = "google_sheets"
 
 
 class WorkflowType(str, Enum):
@@ -26,6 +27,8 @@ class WorkflowType(str, Enum):
     BUG_BACKLOG_AUDIT = "bug_backlog_audit"
     UAT_BUG_TEST_CASES = "uat_bug_test_cases"
     PRIORITIZE_TEST_CASES = "prioritize_test_cases"
+    UAT_BUGS_REPORT = "uat_bugs_report"
+    BUGS_PER_EPICS_REPORT = "bugs_per_epics_report"
 
 
 class RunStatus(str, Enum):
@@ -143,6 +146,52 @@ class BugBacklogAuditRunRequest(BaseModel):
         description="JQL query selecting bug issues to audit",
     )
     max_results: int = Field(default=100, ge=1, le=500, description="Maximum bugs to check")
+
+
+class UatBugsReportRunRequest(BaseModel):
+    """Request payload for uat_bugs_report workflow. Read-only on Jira, writes
+    (for real, no dry-run) to a Google Sheets tab - there's no apply step."""
+
+    jql: str = Field(
+        default='project = MB AND issuetype = Bug ORDER BY parent ASC',
+        description="JQL query selecting bugs to report on",
+    )
+    max_results: int = Field(default=500, ge=1, le=2000, description="Maximum bugs to fetch")
+    sheet_title: str = Field(default="UAT BUGs", description="Target Google Sheets tab name")
+    run_date: Optional[str] = Field(
+        default=None, description="Override the snapshot date (YYYY-MM-DD); defaults to today"
+    )
+    spreadsheet: Optional[str] = Field(
+        default=None,
+        description=(
+            "Google Sheets URL or spreadsheet ID to write to for this run only - "
+            "leave empty to use the spreadsheet configured on the Google Sheets "
+            "integration"
+        ),
+    )
+
+
+class BugsPerEpicsReportRunRequest(BaseModel):
+    """Request payload for bugs_per_epics_report workflow. Read-only on Jira,
+    writes (for real, no dry-run) to a Google Sheets tab - there's no apply step."""
+
+    jql: str = Field(
+        default='project = MB AND issuetype in ("BE BUG", Bug, "Mobile bug", "FE bug") ORDER BY parent ASC',
+        description="JQL query selecting bugs to report on",
+    )
+    max_results: int = Field(default=2000, ge=1, le=5000, description="Maximum bugs to fetch")
+    sheet_title: str = Field(default="Bugs per Epics", description="Target Google Sheets tab name")
+    run_date: Optional[str] = Field(
+        default=None, description="Override the snapshot date (YYYY-MM-DD); defaults to today"
+    )
+    spreadsheet: Optional[str] = Field(
+        default=None,
+        description=(
+            "Google Sheets URL or spreadsheet ID to write to for this run only - "
+            "leave empty to use the spreadsheet configured on the Google Sheets "
+            "integration"
+        ),
+    )
 
 
 class UatBugTestCasesRunRequest(BaseModel):

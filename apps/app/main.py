@@ -15,6 +15,7 @@ from packages.integrations import integration_registry
 from packages.integrations.azure_devops import AzureDevOpsClient
 from packages.integrations.confluence import ConfluenceClient
 from packages.integrations.gemini import GeminiClient
+from packages.integrations.google_sheets import GoogleSheetsClient
 from packages.integrations.jira import JiraClient
 
 logger = get_logger(__name__)
@@ -24,6 +25,7 @@ integration_registry.register(IntegrationType.CONFLUENCE, ConfluenceClient)
 integration_registry.register(IntegrationType.JIRA, JiraClient)
 integration_registry.register(IntegrationType.GEMINI, GeminiClient)
 integration_registry.register(IntegrationType.AZURE_DEVOPS, AzureDevOpsClient)
+integration_registry.register(IntegrationType.GOOGLE_SHEETS, GoogleSheetsClient)
 
 
 @asynccontextmanager
@@ -109,6 +111,8 @@ def create_app() -> FastAPI:
                     <li><a href="/ui/workflows/review_test_cases/run">📋 Review Test Cases</a></li>
                     <li><a href="/ui/workflows/bug_backlog_audit/run">🧾 Bug Backlog Audit</a></li>
                     <li><a href="/ui/workflows/uat_bug_test_cases/run">🧪 UAT Bug Test Cases</a></li>
+                    <li><a href="/ui/workflows/uat_bugs_report/run">📊 UAT Bugs Report</a></li>
+                    <li><a href="/ui/workflows/bugs_per_epics_report/run">📈 Bugs per Epics Report</a></li>
                     <li><a href="/docs">📚 API Documentation (Swagger)</a></li>
                 </ul>
             </body>
