@@ -113,6 +113,7 @@ def create_app() -> FastAPI:
                     <li><a href="/ui/workflows/uat_bug_test_cases/run">🧪 UAT Bug Test Cases</a></li>
                     <li><a href="/ui/workflows/uat_bugs_report/run">📊 UAT Bugs Report</a></li>
                     <li><a href="/ui/workflows/bugs_per_epics_report/run">📈 Bugs per Epics Report</a></li>
+                    <li><a href="/ui/workflows/ac_checklist_sync/run">✅ AC Checklist Sync</a></li>
                     <li><a href="/docs">📚 API Documentation (Swagger)</a></li>
                 </ul>
             </body>

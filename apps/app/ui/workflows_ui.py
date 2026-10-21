@@ -12,6 +12,7 @@ from apps.app.database import WorkflowRunModel
 from apps.app.database import get_session_factory
 from apps.app.config import get_settings
 from apps.app.workflows import enqueue_workflow
+from packages.common import AcChecklistSyncRunRequest
 from packages.common import BugBacklogAuditRunRequest
 from packages.common import BugsPerEpicsReportRunRequest
 from packages.common import PrioritizeTestCasesRunRequest
@@ -23,6 +24,7 @@ from packages.common import TriageBugTicketsRunRequest
 from packages.common import UatBugsReportRunRequest
 from packages.common import UatBugTestCasesRunRequest
 from packages.common import WorkflowType
+from packages.workflows import ac_checklist_sync as ac_checklist_sync_workflow
 from packages.workflows import bug_backlog_audit as bug_backlog_audit_workflow
 from packages.workflows import bugs_per_epics_report as bugs_per_epics_report_workflow
 from packages.workflows import review_test_cases as review_test_cases_workflow
@@ -2117,6 +2119,330 @@ def _render_review_test_cases_page(
     """
 
 
+def _render_ac_checklist_sync_page(
+    *,
+    form_values: dict[str, str] | None = None,
+    validation_error: str | None = None,
+    run_id: str | None = None,
+) -> str:
+    values = {"issue_key": "", "specs_folder_title": "Фаза 1: спецификации", "dry_run": "1", "feature_scope": "both"}
+    if form_values:
+        values.update(form_values)
+
+    error_block = (
+        f'<div class="error">Ошибка: {validation_error}</div>' if validation_error else ""
+    )
+
+    run_panel = ""
+    if run_id:
+        run_panel = f"""
+        <div class="result-card">
+            <h3>Монитор запуска</h3>
+            <p class="run-id-row">Run ID: <code>{run_id}</code><button id="btnCancelRun" class="btn-cancel-run" onclick="cancelRun()">⛔ Остановить</button><span id="cancelStatus" class="hint"></span></p>
+            <div class="progress-line" id="runProgress">Подготовка монитора...</div>
+            <h4>Статус</h4>
+            <pre id="runStatus">Загрузка...</pre>
+            <h4>Поток логов</h4>
+            <div class="logs-toolbar">
+                <span id="logMeta">Логов: 0</span>
+                <label><input type="checkbox" id="autoScrollLogs" checked /> Автопрокрутка</label>
+            </div>
+            <pre id="liveLogs">Загрузка логов...</pre>
+            <h4>Результат</h4>
+            <p class="hint" id="totalSummary"></p>
+            <div id="applyBar" style="display:none; margin-bottom:8px;">
+                <button id="btnApplyMb" class="btn-apply-all" onclick="applyPlatforms(['MB'])" style="display:none;">✅ Применить MB</button>
+                <button id="btnApplyWeb" class="btn-apply-all" onclick="applyPlatforms(['WEB'])" style="display:none;">✅ Применить WEB</button>
+                <button id="btnApplyAll" class="btn-apply-all" onclick="applyPlatforms(null)">✅ Применить всё</button>
+                <span id="applyStatus" style="margin-left:12px; font-size:13px;"></span>
+            </div>
+            <div class="table-scroll">
+            <table>
+                <thead><tr><th>Платформа</th><th>Секция</th><th>Было</th><th>Добавлено</th><th>Какие AC добавлены</th><th>Удалено</th><th>Какие AC удалены</th></tr></thead>
+                <tbody id="resultsTableBody"><tr><td colspan="7">Ожидание результатов...</td></tr></tbody>
+            </table>
+            </div>
+            <div id="dorDodBlock" style="display:none;">
+                <h4>Definition of Ready / Definition of Done</h4>
+                <div class="table-scroll">
+                <table>
+                    <thead><tr><th>Вкладка</th><th>Секция</th><th>Отмечено</th></tr></thead>
+                    <tbody id="dorDodTableBody"></tbody>
+                </table>
+                </div>
+            </div>
+            <h4>Артефакты</h4>
+            <ul id="artifactLinks"><li>Ожидание артефактов...</li></ul>
+        </div>
+        <script>
+            const runId = "{run_id}";
+
+            async function cancelRun() {{
+                if (!confirm("Остановить выполнение? Текущий шаг доработает, затем воркфлоу остановится.")) return;
+                const btn = document.getElementById("btnCancelRun");
+                const statusEl = document.getElementById("cancelStatus");
+                btn.disabled = true;
+                statusEl.textContent = "Остановка запрошена…";
+                try {{
+                    const resp = await fetch(`/api/runs/${{runId}}/cancel`, {{ method: "POST" }});
+                    const data = await resp.json();
+                    if (!resp.ok) {{
+                        statusEl.textContent = `Ошибка: ${{data.detail || resp.status}}`;
+                        btn.disabled = false;
+                        return;
+                    }}
+                    statusEl.textContent = data.cancel_requested
+                        ? "Остановка запрошена — ждём завершения текущего шага…"
+                        : (data.message || "Запуск уже завершён.");
+                    if (!data.cancel_requested) btn.style.display = "none";
+                }} catch (e) {{
+                    statusEl.textContent = "Не удалось отправить запрос на остановку.";
+                    btn.disabled = false;
+                }}
+            }}
+
+            async function applyPlatforms(platforms) {{
+                const label = platforms ? platforms.join("+") : "MB+WEB";
+                if (!confirm(`Записать изменения в Jira (${{label}})? Это реальная запись, не предпросмотр.`)) return;
+                const statusEl = document.getElementById("applyStatus");
+                document.querySelectorAll("#applyBar button").forEach((b) => b.disabled = true);
+                statusEl.textContent = "Применяю…";
+                try {{
+                    const resp = await fetch("/api/workflows/ac-checklist-sync/apply", {{
+                        method: "POST",
+                        headers: {{ "Content-Type": "application/json" }},
+                        body: JSON.stringify({{ run_id: runId, platforms: platforms }}),
+                    }});
+                    const data = await resp.json();
+                    if (!resp.ok) {{
+                        statusEl.textContent = `Ошибка: ${{data.detail || resp.status}}`;
+                        document.querySelectorAll("#applyBar button").forEach((b) => b.disabled = false);
+                        return;
+                    }}
+                    statusEl.textContent = "Запущено, переходим к новому рану…";
+                    window.location.href = `/ui/workflows/ac_checklist_sync/run?run_id=${{data.run_id}}`;
+                }} catch (e) {{
+                    statusEl.textContent = "Не удалось отправить запрос.";
+                    document.querySelectorAll("#applyBar button").forEach((b) => b.disabled = false);
+                }}
+            }}
+
+            let done = false;
+            const monitorStartedAt = Date.now();
+            const POLL_INTERVAL_MS = 1000;
+            const ARTIFACT_POLL_EVERY_TICKS = 5;
+            let tickCount = 0;
+
+            function fmtElapsed(ms) {{
+                const sec = Math.floor(ms / 1000);
+                return `${{Math.floor(sec / 60)}}m ${{sec % 60}}s`;
+            }}
+
+            function escapeHtml(s) {{
+                const d = document.createElement("div");
+                d.textContent = s == null ? "" : String(s);
+                return d.innerHTML;
+            }}
+
+            function fmtAcList(numbers) {{
+                if (!numbers || !numbers.length) return "нет";
+                return numbers.map((n) => `AC-${{String(n).padStart(2, "0")}}`).join(", ");
+            }}
+
+            async function refreshRun() {{
+                const runResp = await fetch(`/api/runs/${{runId}}`);
+                if (!runResp.ok) return;
+                const run = await runResp.json();
+                document.getElementById("runStatus").textContent = JSON.stringify(run, null, 2);
+                const elapsed = fmtElapsed(Date.now() - monitorStartedAt);
+                document.getElementById("runProgress").textContent = `Статус: ${{String(run.status || "unknown").toUpperCase()}} | Прошло: ${{elapsed}}`;
+
+                const logsResp = await fetch(`/api/runs/${{runId}}/logs`);
+                if (logsResp.ok) {{
+                    const logsData = await logsResp.json();
+                    const logs = logsData.logs || [];
+                    const lines = logs.map((l) => `${{l.timestamp}} [${{l.level}}] ${{l.message}}`);
+                    const logsEl = document.getElementById("liveLogs");
+                    logsEl.textContent = lines.join("\\n") || "Логов пока нет";
+                    document.getElementById("logMeta").textContent = `Логов: ${{logs.length}}`;
+                    if (document.getElementById("autoScrollLogs").checked) logsEl.scrollTop = logsEl.scrollHeight;
+                }}
+
+                const isTerminal = ["succeeded", "failed", "canceled"].includes(run.status);
+                if (isTerminal) document.getElementById("btnCancelRun").style.display = "none";
+
+                if ((tickCount % ARTIFACT_POLL_EVERY_TICKS === 0) || isTerminal) {{
+                    const artifactResp = await fetch(`/api/artifacts/run/${{runId}}`);
+                    if (artifactResp.ok) {{
+                        const artifacts = await artifactResp.json();
+                        const linksEl = document.getElementById("artifactLinks");
+                        linksEl.innerHTML = "";
+                        for (const item of artifacts) {{
+                            const li = document.createElement("li");
+                            const a = document.createElement("a");
+                            a.href = item.download_url;
+                            a.textContent = item.filename;
+                            li.appendChild(a);
+                            linksEl.appendChild(li);
+                        }}
+
+                        const resultArtifact = artifacts.find((a) => a.filename === "workflow_result.json");
+                        if (resultArtifact) {{
+                            const resultResp = await fetch(resultArtifact.download_url);
+                            if (resultResp.ok) {{
+                                const data = await resultResp.json();
+                                const mode = data.dry_run ? "ПРЕДПРОСМОТР (ничего не записано)" : "ЗАПИСАНО В JIRA";
+                                document.getElementById("totalSummary").textContent =
+                                    `${{mode}} | User Story: ${{data.story_ref || ""}} | Спецификация: ${{data.spec_page_title || ""}} ` +
+                                    `(${{data.spec_page_url || ""}}) | Найдено AC: ${{data.ac_total_found ?? 0}} | Область: ${{data.feature_scope || "both"}}`;
+
+                                const rows = data.sections || [];
+                                const body = document.getElementById("resultsTableBody");
+                                body.innerHTML = "";
+                                if (!rows.length) {{
+                                    body.innerHTML = '<tr><td colspan="7">Нет данных.</td></tr>';
+                                }}
+                                const foundPlatforms = [];
+                                let hasAnyChange = false;
+                                for (const row of rows) {{
+                                    const tr = document.createElement("tr");
+                                    if (row.skipped) {{
+                                        tr.innerHTML = `<td>${{escapeHtml(row.platform)}}</td><td colspan="6" class="hint">не затронуто в этом запуске</td>`;
+                                        body.appendChild(tr);
+                                        continue;
+                                    }}
+                                    if (!row.found) {{
+                                        tr.innerHTML = `<td>${{escapeHtml(row.platform)}}</td><td colspan="6">секция не найдена на чек-листе — пропущено</td>`;
+                                        body.appendChild(tr);
+                                        continue;
+                                    }}
+                                    foundPlatforms.push(row.platform);
+                                    if ((row.added_count ?? 0) > 0 || (row.removed_count ?? 0) > 0) hasAnyChange = true;
+                                    if (row.excluded_by_feature_scope) {{
+                                        tr.innerHTML = `
+                                            <td>${{escapeHtml(row.platform)}}</td>
+                                            <td>${{escapeHtml(row.section_name)}}</td>
+                                            <td colspan="4">функция не применима к этой платформе — очищено ${{row.removed_count ?? 0}} пункт(ов): ${{escapeHtml(fmtAcList(row.removed_ac_numbers))}}</td>
+                                        `;
+                                        body.appendChild(tr);
+                                        continue;
+                                    }}
+                                    tr.innerHTML = `
+                                        <td>${{escapeHtml(row.platform)}}</td>
+                                        <td>${{escapeHtml(row.section_name)}}</td>
+                                        <td>${{row.existing_count ?? 0}}</td>
+                                        <td>${{row.added_count ?? 0}}</td>
+                                        <td>${{escapeHtml(fmtAcList(row.added_ac_numbers))}}</td>
+                                        <td>${{row.removed_count ?? 0}}</td>
+                                        <td>${{escapeHtml(fmtAcList(row.removed_ac_numbers))}}</td>
+                                    `;
+                                    body.appendChild(tr);
+                                }}
+
+                                const dorDodRows = data.dor_dod || [];
+                                const dorDodBlock = document.getElementById("dorDodBlock");
+                                if (data.mark_dor_dod && dorDodRows.length) {{
+                                    dorDodBlock.style.display = "block";
+                                    const dorDodBody = document.getElementById("dorDodTableBody");
+                                    dorDodBody.innerHTML = "";
+                                    for (const row of dorDodRows) {{
+                                        if ((row.marked_count ?? 0) > 0 || (row.unmarked_count ?? 0) > 0) hasAnyChange = true;
+                                        const tr = document.createElement("tr");
+                                        const markedText = row.excluded
+                                            ? `не применимо к области фичи — снято отметок: ${{row.unmarked_count ?? 0}}`
+                                            : `${{row.marked_count ?? 0}} из ${{row.total ?? 0}}` + ((row.unmarked_count ?? 0) > 0 ? `, снято неприменимых: ${{row.unmarked_count}}` : "");
+                                        tr.innerHTML = `<td>${{escapeHtml(row.tab)}}</td><td>${{escapeHtml(row.section)}}</td><td>${{markedText}}</td>`;
+                                        dorDodBody.appendChild(tr);
+                                    }}
+                                }} else {{
+                                    dorDodBlock.style.display = "none";
+                                }}
+
+                                const applyBar = document.getElementById("applyBar");
+                                if (data.dry_run && isTerminal && run.status === "succeeded" && hasAnyChange) {{
+                                    applyBar.style.display = "block";
+                                    document.getElementById("btnApplyMb").style.display = foundPlatforms.includes("MB") ? "inline-block" : "none";
+                                    document.getElementById("btnApplyWeb").style.display = foundPlatforms.includes("WEB") ? "inline-block" : "none";
+                                }} else {{
+                                    applyBar.style.display = "none";
+                                }}
+                            }}
+                        }}
+                    }}
+                }}
+                if (isTerminal) done = true;
+            }}
+
+            async function tick() {{
+                tickCount += 1;
+                try {{ await refreshRun(); }} catch (e) {{}}
+                if (!done) setTimeout(tick, POLL_INTERVAL_MS);
+            }}
+            tick();
+        </script>
+        """
+
+    dry_run_checked = "checked" if values.get("dry_run") in ("1", "true", "True", "on") else ""
+    mark_dor_dod_checked = "checked" if values.get("mark_dor_dod") in ("1", "true", "True", "on") else ""
+    feature_scope_value = values.get("feature_scope", "both")
+    feature_scope_options = ""
+    for value, label in (
+        ("both", "Обе платформы (MB + WEB)"),
+        ("mb_only", "Только MB (секция WEB будет полностью очищена)"),
+        ("web_only", "Только WEB (секция MB будет полностью очищена)"),
+    ):
+        selected = "selected" if feature_scope_value == value else ""
+        feature_scope_options += f'<option value="{value}" {selected}>{label}</option>'
+
+    return f"""
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <title>AC Checklist Sync - Triage Bugs Tool</title>
+        <style>{_REVIEW_STYLE}</style>
+    </head>
+    <body>
+        {_REVIEW_NAV}
+        <div class="container">
+            <h2>Синхронизация чек-листа AC</h2>
+            <p style="margin-bottom: 16px; color: #555;">Находит спецификацию User Story в Confluence по задаче Jira, считает реальное
+            число критериев приёмки (AC-NN) в таблице «Критерии Приемки» и заполняет чек-лист задачи (вкладка «QA: AccCriterias are
+            passed», секции «MB: precheck ACs...» и «WEB (IB): precheck ACs...») — добавляет недостающие пункты и удаляет устаревшие
+            (если спецификацию сократили), никогда не трогая уже существующие актуальные пункты (их статус/отметки сохраняются).
+            По умолчанию включён режим предпросмотра — после него появится кнопка «Применить», без повторного запуска формы.</p>
+            {error_block}
+            <form method="post" action="/ui/workflows/ac_checklist_sync/run" id="acChecklistSyncForm">
+                <div class="form-group">
+                    <label for="issue_key">Ключ задачи Jira</label>
+                    <input id="issue_key" type="text" name="issue_key" placeholder="MB-1666" value="{values.get('issue_key', '')}" required />
+                </div>
+                <div class="form-group">
+                    <label for="specs_folder_title">Папка спецификаций в Confluence</label>
+                    <input id="specs_folder_title" type="text" name="specs_folder_title" value="{values.get('specs_folder_title', '')}" />
+                </div>
+                <div class="form-group">
+                    <label for="feature_scope">Область фичи</label>
+                    <select id="feature_scope" name="feature_scope">{feature_scope_options}</select>
+                    <p class="hint">Если фича реализована только на одной платформе — пункты другой секции не просто оставляются,
+                    а полностью удаляются как неприменимые к этой задаче.</p>
+                </div>
+                <div class="form-group">
+                    <label><input type="checkbox" id="mark_dor_dod" name="mark_dor_dod" value="1" {mark_dor_dod_checked} /> Также отметить пункты Definition of Ready / Definition of Done</label>
+                    <p class="hint">Отмечает done все пункты этих вкладок; пункты, не применимые к выбранной выше области фичи,
+                    наоборот снимаются (ставятся done=false), даже если были отмечены раньше — например, секция «ready for QA WEB
+                    testing» и WEB-пункты DoD при «Только MB».</p>
+                </div>
+                <div class="form-group">
+                    <label><input type="checkbox" id="dry_run" name="dry_run" value="1" {dry_run_checked} /> Только предпросмотр (не записывать в Jira)</label>
+                </div>
+                <button type="submit">Запустить</button>
+            </form>
+            {run_panel}
+        </div>
+    </body></html>
+    """
+
+
 def _render_bug_backlog_audit_page(
     *,
     form_values: dict[str, str] | None = None,
@@ -3134,6 +3460,8 @@ async def run_workflow_page(request: Request, workflow_key: str) -> str:
         return _render_review_test_cases_page(run_id=run_id)
     if workflow_key == "bug_backlog_audit":
         return _render_bug_backlog_audit_page(run_id=run_id)
+    if workflow_key == "ac_checklist_sync":
+        return _render_ac_checklist_sync_page(run_id=run_id)
     if workflow_key == "uat_bug_test_cases":
         return _render_uat_bug_test_cases_page(run_id=run_id)
     if workflow_key == "uat_bugs_report":
@@ -3475,6 +3803,41 @@ async def run_bug_backlog_audit_submit(request: Request, db: Session = Depends(g
 
     enqueue_workflow(run_id, "bug_backlog_audit")
     return RedirectResponse(url=f"/ui/workflows/bug_backlog_audit/run?run_id={run_id}", status_code=303)
+
+
+@router.post("/ac_checklist_sync/run", response_class=HTMLResponse)
+async def run_ac_checklist_sync_submit(request: Request, db: Session = Depends(get_db)):
+    """Form submit endpoint for ac_checklist_sync workflow UI."""
+    form = await request.form()
+    form_values = {k: str(v) for k, v in form.items()}
+
+    payload = {
+        "issue_key": str(form.get("issue_key") or "").strip(),
+        "specs_folder_title": str(form.get("specs_folder_title") or "").strip() or "Фаза 1: спецификации",
+        "dry_run": bool(form.get("dry_run")),
+        "feature_scope": str(form.get("feature_scope") or "both"),
+        "mark_dor_dod": bool(form.get("mark_dor_dod")),
+    }
+
+    try:
+        validated = AcChecklistSyncRunRequest(**payload)
+    except (ValidationError, ValueError) as exc:
+        return _render_ac_checklist_sync_page(form_values=form_values, validation_error=str(exc))
+
+    run_id = str(uuid4())
+    run = WorkflowRunModel(
+        id=run_id,
+        workflow_key="ac_checklist_sync",
+        parameters=validated.model_dump(),
+        dry_run="1" if validated.dry_run else "0",
+        status="queued",
+        created_at=datetime.utcnow(),
+    )
+    db.add(run)
+    db.commit()
+
+    enqueue_workflow(run_id, "ac_checklist_sync")
+    return RedirectResponse(url=f"/ui/workflows/ac_checklist_sync/run?run_id={run_id}", status_code=303)
 
 
 @router.post("/uat_bugs_report/run", response_class=HTMLResponse)

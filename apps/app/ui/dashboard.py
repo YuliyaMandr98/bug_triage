@@ -191,6 +191,10 @@ async def dashboard(request: Request, db: Session = Depends(get_db)) -> str:
                         <span class="label">Bugs per Epics Report</span>
                         <span class="hint">Write the by-epic/sub-type report for all project bugs into the "Bugs per Epics" Google Sheets tab.</span>
                     </a>
+                    <a class="action-btn" href="/ui/workflows/ac_checklist_sync/run">
+                        <span class="label">AC Checklist Sync</span>
+                        <span class="hint">Fill the "QA: AccCriterias are passed" checklist from the real AC count in the Confluence spec.</span>
+                    </a>
                 </div>
             </div>
 

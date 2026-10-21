@@ -20,6 +20,7 @@ from packages.common import IntegrationType, SecretEncryption, get_logger
 from packages.integrations import integration_registry
 from packages.integrations.google_sheets import extract_spreadsheet_id
 from packages.workflows import (
+    ac_checklist_sync,
     bug_backlog_audit,
     bugs_per_epics_report,
     prioritize_test_cases,
@@ -575,6 +576,56 @@ def run_workflow(run_id: str, workflow_key: str):
             workflow_result = result
             log_step("INFO", f"Workflow {workflow_key} finished", correlation_id=correlation_id)
 
+        elif workflow_key == "ac_checklist_sync":
+            jira_client = integration_registry.get_client(
+                IntegrationType.JIRA,
+                _resolve_integration_config(session, IntegrationType.JIRA),
+            )
+            confluence_client = integration_registry.get_client(
+                IntegrationType.CONFLUENCE,
+                _resolve_integration_config(session, IntegrationType.CONFLUENCE),
+            )
+            log_step(
+                "INFO",
+                f"Syncing AC checklist for {params.get('issue_key')} (dry_run={params.get('dry_run', True)})",
+                correlation_id=correlation_id,
+            )
+
+            result = asyncio.run(
+                ac_checklist_sync.run_ac_checklist_sync_workflow(
+                    jira_client=jira_client,
+                    confluence_client=confluence_client,
+                    issue_key=str(params.get("issue_key", "")),
+                    specs_folder_title=str(params.get("specs_folder_title", "Фаза 1: спецификации")),
+                    dry_run=bool(params.get("dry_run", True)),
+                    feature_scope=str(params.get("feature_scope", "both")),
+                    platforms=params.get("platforms"),
+                    mark_dor_dod=bool(params.get("mark_dor_dod", False)),
+                    correlation_id=correlation_id,
+                    log_fn=lambda level, message: log_step(level, message, correlation_id=correlation_id),
+                    should_cancel_fn=should_cancel,
+                )
+            )
+
+            if result.get("status") == "canceled":
+                run.status = "canceled"
+                run.error_message = result.get("error", "Остановлено пользователем")
+                run.completed_at = _utc_now()
+                session.commit()
+                log_step("WARNING", f"Workflow {workflow_key} canceled by user", correlation_id=correlation_id)
+                return
+
+            if result.get("status") == "failed":
+                run.status = "failed"
+                run.error_message = result.get("error", "Workflow failed")
+                run.completed_at = _utc_now()
+                session.commit()
+                log_step("ERROR", f"Workflow {workflow_key} failed: {result.get('error')}", correlation_id=correlation_id)
+                return
+
+            workflow_result = result
+            log_step("INFO", f"Workflow {workflow_key} finished", correlation_id=correlation_id)
+
         elif workflow_key == "bug_backlog_audit":
             jira_client = integration_registry.get_client(
                 IntegrationType.JIRA,
@@ -802,6 +853,11 @@ def run_workflow(run_id: str, workflow_key: str):
                 _persist_artifact(
                     session, run_id, "bug_backlog_audit_report.txt",
                     bug_backlog_audit.render_text_report(workflow_result), content_type="text/plain",
+                )
+            elif workflow_key == "ac_checklist_sync":
+                _persist_artifact(
+                    session, run_id, "ac_checklist_sync_report.txt",
+                    ac_checklist_sync.render_text_report(workflow_result), content_type="text/plain",
                 )
             elif workflow_key == "uat_bug_test_cases":
                 _persist_artifact(

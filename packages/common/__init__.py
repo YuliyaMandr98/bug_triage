@@ -1,6 +1,7 @@
 """Common shared modules and utilities."""
 
 from packages.common.models import (
+    AcChecklistSyncRunRequest,
     ArtifactResponse,
     BugBacklogAuditRunRequest,
     BugsPerEpicsReportRunRequest,
@@ -33,6 +34,7 @@ from packages.common.utils import (
 __all__ = [
     "IntegrationType",
     "WorkflowType",
+    "AcChecklistSyncRunRequest",
     "RunStatus",
     "IntegrationConnectionStatus",
     "IntegrationConfig",

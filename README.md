@@ -476,6 +476,38 @@ Report, но во вкладку **«Bugs per Epics»** — родную вкл�
    смысл этого поля не был понят достаточно, чтобы корректно его воспроизвести.
 4. Артефакты рана: `scripts/data/bugs_per_epics_report.json`.
 
+### AC Checklist Sync (заполнение чек-листа критериев приёмки)
+
+Заполняет чек-лист **Checklist for Jira Cloud (Appbox)** на задаче-истории (вкладка
+«QA: AccCriterias are passed», секции «MB: precheck ACs...» и «WEB (IB): precheck
+ACs...») по реальному числу критериев приёмки в Confluence-спецификации. У этого
+плагина нет документированного REST API для режима «несколько чек-листов на задаче»
+(именно так настроен этот Jira-инстанс) — формат хранения (Jira entity properties)
+реверс-инжинирен напрямую (см. `packages/workflows/ac_checklist_sync/_codec.py`); перед
+каждой записью воркфлоу самостоятельно декодирует только что собранные данные обратно и
+сверяет с оригиналом (round-trip self-check) — если сверка не совпала, ничего не
+записывается.
+
+1. Откройте **http://localhost:8000/ui/workflows/ac_checklist_sync/run**, укажите ключ
+   задачи (например, `MB-1666`).
+2. Воркфлоу находит в теме задачи ссылку вида «US-9.2.2», ищет соответствующую страницу
+   спецификации в Confluence (та же логика поиска, что и в Upload Test Cases), парсит
+   таблицу «Критерии Приемки» и считает реальное число строк (терпимо к написанию и
+   латиницей **AC-NN**, и кириллицей **АС-NN** — в реальных спеках встречаются оба
+   варианта в одной и той же таблице).
+3. Для каждой из секций MB/WEB (у обеих — одинаковый полный список критериев, так как обе
+   платформы проверяют одну и ту же спецификацию):
+   - уже существующие пункты с актуальным номером AC **не трогаются** (статус/отметки
+     сохраняются);
+   - недостающие — **добавляются** как обязательные пункты со статусом «To Do»;
+   - пункты, чей номер AC **больше не встречается** в текущей спецификации (её сократили
+     при ревизии), — **удаляются**, с явным указанием какие именно в отчёте.
+4. По умолчанию включён **режим предпросмотра** (`dry_run`) — отчёт показывает, что
+   изменилось бы, но ничего не пишет в Jira, пока явно не снять галочку «Только
+   предпросмотр».
+5. Артефакты рана включают `workflow_result.json` и человекочитаемый
+   `ac_checklist_sync_report.txt`.
+
 ## Запуск без UI (CLI)
 
 Каждый workflow можно запустить напрямую из терминала, без веб-интерфейса и сервера —
@@ -530,6 +562,10 @@ make uat-bug-sheet-report ARGS="--spreadsheet https://docs.google.com/spreadshee
 # Отчёт по всем багам проекта в Google Sheets (вкладка "Bugs per Epics")
 make bugs-per-epics-report
 make bugs-per-epics-report ARGS="--spreadsheet 1AbCdEf..."
+
+# Синхронизация чек-листа AC по задаче (по умолчанию — предпросмотр)
+make ac-checklist-sync ARGS="MB-1666"
+make ac-checklist-sync ARGS="MB-1666 --write"
 ```
 
 `--spreadsheet` (URL или голый ID) у обоих отчётов необязателен и переопределяет
@@ -551,6 +587,7 @@ PYTHONPATH=$(pwd) venv/bin/python scripts/review_test_cases.py --us 20.1.1 --tes
 PYTHONPATH=$(pwd) venv/bin/python scripts/bug_backlog_audit.py --max-results 50
 PYTHONPATH=$(pwd) venv/bin/python scripts/uat_bug_test_cases.py --sprint 23 --apply
 PYTHONPATH=$(pwd) venv/bin/python scripts/uat_bug_sheet_report.py
+PYTHONPATH=$(pwd) venv/bin/python scripts/ac_checklist_sync.py MB-1666 --write
 ```
 
 Результат каждого запуска сохраняется в `scripts/data/*.json` (путь можно переопределить
@@ -580,6 +617,7 @@ packages/
   workflows/uat_bug_test_cases/ — UAT-баги заказчика -> тест-кейсы в Azure DevOps (suite "UAT Bugs" по спринтам) + Gemini
   workflows/uat_bugs_report/ — снэпшот количества UAT-багов по статусам -> дата-строка в Google Sheets (без LLM, только CLI)
   workflows/bugs_per_epics_report/ — снэпшот всех багов проекта (BE BUG/Bug/Mobile bug/FE bug) по эпикам -> вкладка "Bugs per Epics" в Google Sheets (без LLM, только CLI)
+  workflows/ac_checklist_sync/ — заполнение чек-листа AC (Checklist for Jira Cloud/Appbox) по числу критериев приёмки в спецификации Confluence (без LLM; собственный кодек для недокументированного формата плагина — см. _codec.py)
 scripts/           — CLI-обёртки над теми же workflow'ами для запуска без UI (см. "Запуск без UI (CLI)")
 ```
 
