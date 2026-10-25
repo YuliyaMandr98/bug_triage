@@ -508,6 +508,67 @@ ACs...») по реальному числу критериев приёмки �
 5. Артефакты рана включают `workflow_result.json` и человекочитаемый
    `ac_checklist_sync_report.txt`.
 
+### Test Case Status Sync (синхронизация статусов тест-кейсов с автотестами)
+
+Не использует LLM — чистая проверка Azure DevOps + локального репозитория `qa-api-tests`.
+Закрывает ситуацию, когда баг сломал автотест, тест-кейсу в Azure DevOps проставили статус
+Failed для конфигурации **macOS Apidog**, баг починили — а статус тест-кейса вручную
+обновить забыли.
+
+1. Откройте **http://localhost:8000/ui/workflows/test_case_status_sync/run**.
+2. По умолчанию проверяется весь тест-план **API Test Cases** (`plan_id=2015`,
+   корневой suite `2016`) для конфигурации **macOS Apidog** — все три параметра
+   можно изменить в форме, как и путь к папке `tests` репозитория `qa-api-tests`.
+3. Для каждого test point со статусом **Failed** на нужной конфигурации воркфлоу ищет в
+   `qa-api-tests` автотест, чей заголовок начинается с ID этого тест-кейса (например,
+   `test("6579: ...")`), и раскладывает находки на три группы:
+   - **Автотест найден и НЕ в `.skip`/`.fixme`** — попадает в «к обновлению»: в режиме
+     применения тест-кейсу проставляется статус **Passed**.
+   - **Автотест найден, но всё ещё `.skip`/`.fixme`** — статус остаётся Failed, тест-кейс
+     просто попадает в отчёт (баг ещё не пофикшен либо автотест отключён по другой причине).
+   - **Автотест не найден** — не ошибка: тест-кейс мог быть ещё не автоматизирован, либо в
+     его названии стоит **«(Manual Only)»** (точно никогда не будет автоматизирован).
+     Тест-кейс просто попадает в отчёт с пометкой, если это «(Manual Only)».
+4. По умолчанию включён **режим предпросмотра** — отчёт показывает, что изменилось бы, но
+   ничего не пишет в Azure DevOps, пока не отмечен чекбокс «Применить» (или не нажата кнопка
+   «✅ Применить» на мониторе уже готового предпросмотра — она переиспользует те же
+   `plan_id`/`root_suite_id`/`configuration_name`/`tests_root`, без необходимости заново
+   заполнять форму и ждать повторного сканирования всех suite).
+5. Артефакты рана включают `workflow_result.json` и человекочитаемый
+   `test_case_status_sync_report.txt`.
+
+### Testing Tasks Generator (генерация задач тестирования)
+
+Не использует LLM — чистая проверка/запись в Jira. По эталону вроде
+[MB-76](https://fincabank-kg.atlassian.net/browse/MB-76): у Истории (User Story) через
+связь **"is Tested by"** должен быть ровно один набор задач тестирования — по одной на
+каждую активность:
+- **API**: одна задача на тест-кейсы + ручное тестирование вместе (`QA API task`,
+  префикс `[API tc+ex]`) и одна на автоматизацию (`QA API auto task`, префикс `[auto API]`).
+- **Mobile**: тест-кейсы (`QA MB task`, `[MB tc]`), ручное тестирование (тот же тип задачи,
+  `[MB ex]`) и автоматизация (`QA MB auto task`, `[auto MB]`).
+- **Web**: то же самое, что Mobile, но `QA WEB task`/`QA WEB auto task` и
+  `[WEB tc]`/`[WEB ex]`/`[auto WEB]`.
+
+1. Откройте **http://localhost:8000/ui/workflows/testing_tasks_generator/run**.
+2. Укажите ключ Истории (например `MB-3454`) и отметьте чекбоксами, для каких платформ
+   генерировать задачи — API, Mobile, Web (по умолчанию отмечены все три, можно оставить
+   только нужные).
+3. Воркфлоу смотрит уже привязанные к Истории через "is Tested by" задачи тестирования и
+   определяет, каких не хватает. Если у какой-то задачи нет префикса в названии (просто
+   копия названия Истории), она считается самой ранней по приоритету — тест-кейсами для
+   Mobile/Web (ручное тестирование и автоматизация всё равно будут созданы отдельно) или
+   связкой tc+ex для API.
+4. Для каждой недостающей задачи название формируется как копия названия Истории с
+   добавленным префиксом (например, `[E10]: [auto API]: US-10.2.2 | ...`), задача создаётся
+   в том же проекте Jira и сразу привязывается к Истории связью "is Tested by".
+5. По умолчанию включён **режим предпросмотра** — отчёт показывает, что будет создано, но
+   ничего не пишет в Jira, пока не отмечен чекбокс «Применить» (или не нажата кнопка
+   «✅ Применить» на мониторе уже готового предпросмотра — без необходимости заново
+   заполнять форму).
+6. Артефакты рана включают `workflow_result.json` и человекочитаемый
+   `testing_tasks_generator_report.txt`.
+
 ## Запуск без UI (CLI)
 
 Каждый workflow можно запустить напрямую из терминала, без веб-интерфейса и сервера —
@@ -566,6 +627,15 @@ make bugs-per-epics-report ARGS="--spreadsheet 1AbCdEf..."
 # Синхронизация чек-листа AC по задаче (по умолчанию — предпросмотр)
 make ac-checklist-sync ARGS="MB-1666"
 make ac-checklist-sync ARGS="MB-1666 --write"
+
+# Синхронизация статусов тест-кейсов macOS Apidog с .skip в qa-api-tests (по умолчанию — предпросмотр)
+make test-case-status-sync
+make test-case-status-sync ARGS="--apply"
+
+# Генерация недостающих задач тестирования для Истории (по умолчанию — предпросмотр)
+make testing-tasks-generator ARGS="MB-3454"
+make testing-tasks-generator ARGS="MB-3454 --apply"
+make testing-tasks-generator ARGS="MB-3454 --no-mobile --no-web --apply"
 ```
 
 `--spreadsheet` (URL или голый ID) у обоих отчётов необязателен и переопределяет
@@ -588,6 +658,8 @@ PYTHONPATH=$(pwd) venv/bin/python scripts/bug_backlog_audit.py --max-results 50
 PYTHONPATH=$(pwd) venv/bin/python scripts/uat_bug_test_cases.py --sprint 23 --apply
 PYTHONPATH=$(pwd) venv/bin/python scripts/uat_bug_sheet_report.py
 PYTHONPATH=$(pwd) venv/bin/python scripts/ac_checklist_sync.py MB-1666 --write
+PYTHONPATH=$(pwd) venv/bin/python scripts/test_case_status_sync.py --apply
+PYTHONPATH=$(pwd) venv/bin/python scripts/testing_tasks_generator.py MB-3454 --apply
 ```
 
 Результат каждого запуска сохраняется в `scripts/data/*.json` (путь можно переопределить
@@ -618,6 +690,8 @@ packages/
   workflows/uat_bugs_report/ — снэпшот количества UAT-багов по статусам -> дата-строка в Google Sheets (без LLM, только CLI)
   workflows/bugs_per_epics_report/ — снэпшот всех багов проекта (BE BUG/Bug/Mobile bug/FE bug) по эпикам -> вкладка "Bugs per Epics" в Google Sheets (без LLM, только CLI)
   workflows/ac_checklist_sync/ — заполнение чек-листа AC (Checklist for Jira Cloud/Appbox) по числу критериев приёмки в спецификации Confluence (без LLM; собственный кодек для недокументированного формата плагина — см. _codec.py)
+  workflows/test_case_status_sync/ — Failed test point (конфигурация macOS Apidog) -> Passed, если соответствующий автотест в qa-api-tests больше не .skip (без LLM)
+  workflows/testing_tasks_generator/ — создание недостающих API/Mobile/Web задач тестирования (тест-кейсы/ручное/автоматизация) для Истории по образцу связей "is Tested by" (без LLM)
 scripts/           — CLI-обёртки над теми же workflow'ами для запуска без UI (см. "Запуск без UI (CLI)")
 ```
 
