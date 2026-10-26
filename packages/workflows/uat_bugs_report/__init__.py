@@ -27,7 +27,7 @@ left to right in column AF onward: "All Bugs" -> "Opened Bugs" -> "Сравне�
 по эпикам..." -> "Opened Bugs Total" (rightmost, since it's the only one that
 grows wider every run) - close enough to the left edge to reach with a short
 scroll, while still never colliding with the pre-automation legacy tables
-(column A / column O-W) no matter how far either one grows downward - see
+(column A / column Q-AE) no matter how far either one grows downward - see
 BLOCK_B_COL0/BLOCK_A_COL0/BLOCK_C_COL0/TIMESERIES_COL0.
 
 Every data cell in all four tables is a `HYPERLINK(...)` formula pointing at
@@ -97,7 +97,7 @@ HEADER_STYLE = {"backgroundColor": _HEADER_BG, "horizontalAlignment": "CENTER", 
 DATA_STYLE = {"backgroundColor": _WHITE_BG, "horizontalAlignment": "LEFT", "textFormat": {"bold": False, "foregroundColor": _DARK_TEXT}}
 TOTAL_STYLE = {"backgroundColor": _HEADER_BG, "horizontalAlignment": "LEFT", "textFormat": {"bold": True, "foregroundColor": _DARK_TEXT}}
 
-# "Parent - DATE" blocks (column O) are plain in the original - no fill
+# "Parent - DATE" blocks (column Q) are plain in the original - no fill
 # color, just a bold block-title/"Total" cell - unlike the new tables' blue-
 # banner style above.
 LEGACY_BLOCK_HEADER_STYLE = {"textFormat": {"bold": True, "foregroundColor": _DARK_TEXT}}
@@ -129,11 +129,11 @@ _BLOCK_HEADER_RE = re.compile(r"^Parent\s*-\s*(.+)$")
 # Row/column layout within the "UAT BUGs" tab. The legacy pre-automation
 # content occupies two areas that both grow *downward* without bound (a new
 # row per run for the period/status table in column A, a whole new
-# "Parent - DATE" block every run in column O, which in practice never uses
-# more than ~9 columns, O through W). All four auto-generated tables sit in
+# "Parent - DATE" block every run in column Q, which in practice never uses
+# more than ~15 columns, Q through AE). All four auto-generated tables sit in
 # ONE shared header row (`NEW_SECTION_ROW0`), side by side left to right -
 # far enough past column W that NEITHER the period table (column A) NOR the
-# "Parent - DATE" blocks (column O-W) can ever collide with them at ANY row,
+# "Parent - DATE" blocks (column Q-AE) can ever collide with them at ANY row,
 # no matter how far either one grows down, while staying close enough to the
 # left edge to reach with a short horizontal scroll. Order (left to right),
 # per explicit user request: "All Bugs" -> "Opened Bugs" -> "Сравнение по
@@ -154,10 +154,21 @@ TIMESERIES_ROW_START = NEW_SECTION_ROW0  # same shared row as the other three
 TIMESERIES_ROW_BUDGET = 60
 TIMESERIES_COL_BUDGET = 120
 
-# Legacy pre-automation tables (column A / column O) - now kept growing by
+# Legacy pre-automation tables (column A / column Q) - now kept growing by
 # this workflow too, per explicit user request, instead of staying frozen.
 LEGACY_PERIOD_ROW_BUDGET = 1000  # generous cap for the "Issues status during time" chart's domain/series
-LEGACY_BLOCK_COL0 = 14  # 0-indexed column O - the "Parent - DATE" blocks
+# 0-indexed column Q - the "Parent - DATE" blocks. Was column O (14) until
+# 2026-10-26, when a newly-added "UAT passed" status column grew the period
+# table's own header (column A) wide enough that its "Total" column landed
+# exactly on column O, silently overwriting several blocks' title/epic-label
+# cells with period-table numbers. Column Q leaves a 2-column buffer (O, P)
+# past the period table's current width. The workflow auto-migrates any
+# existing block data that's still sitting at the old column to this one on
+# its own (see `_auto_migrate_legacy_blocks` and its call site) - every
+# subsequent run then detects the blocks already at LEGACY_BLOCK_COL0 and
+# this is a no-op, per explicit user request ("следующие запуски уже не
+# должны ничего сдвигать").
+LEGACY_BLOCK_COL0 = 16
 LEGACY_BLOCK_SCAN_ROWS = 9000  # how far down to scan for the last existing block before appending a new one
 LEGACY_CHART_TITLE = "Issues status during time"
 
@@ -593,6 +604,59 @@ def _legacy_block_grid(
     return grid
 
 
+# How far right/down to look when detecting the "Parent - DATE" blocks'
+# current column, for `_auto_migrate_legacy_blocks` below. The min bound stays
+# comfortably right of the period table's own columns (so a stray match there
+# is never mistaken for a block); the row bound is generous since the very
+# first block's title has always been within the opening rows of the sheet.
+_LEGACY_BLOCK_DETECT_MIN_COL = 8  # column I
+_LEGACY_BLOCK_DETECT_SCAN_ROWS = 200
+
+
+def _detect_legacy_block_col0(sheets_client, sheet_title: str, max_col0: int) -> Optional[int]:
+    """Scan for the leftmost column currently holding a "Parent - DATE" block
+    title/header cell (matches `_BLOCK_HEADER_RE`), so
+    `_auto_migrate_legacy_blocks` can detect blocks sitting at a stale
+    position and move them. Returns None if no block exists yet (a brand-new
+    sheet) - the normal append logic then writes the very first one directly
+    at LEGACY_BLOCK_COL0, nothing to migrate."""
+    min_col_letter = _col_letter(_LEGACY_BLOCK_DETECT_MIN_COL)
+    max_col_letter = _col_letter(max_col0)
+    values = sheets_client.read_values(sheet_title, f"{min_col_letter}1:{max_col_letter}{_LEGACY_BLOCK_DETECT_SCAN_ROWS}")
+    found_col0: Optional[int] = None
+    for row in values:
+        for i, cell in enumerate(row):
+            if cell and _BLOCK_HEADER_RE.match(str(cell).strip()):
+                col0 = _LEGACY_BLOCK_DETECT_MIN_COL + i
+                if found_col0 is None or col0 < found_col0:
+                    found_col0 = col0
+    return found_col0
+
+
+def _auto_migrate_legacy_blocks(sheets_client, sheet_title: str, sheet_id: int, log_fn: Callable[[str, str], None]) -> None:
+    """One-time, idempotent fix-up: if the "Parent - DATE" blocks are still
+    sitting at an older column than LEGACY_BLOCK_COL0 (a spreadsheet that
+    predates the 2026-10-26 O->Q move, or one manually rolled back via
+    Sheets' own Version History - both happened on the real production file),
+    shift the whole block area there via a single `cutPaste` (preserves
+    formatting/hyperlinks, unlike a read+rewrite) before anything else this
+    run touches either area. A sheet already at LEGACY_BLOCK_COL0 - every run
+    after the first - is a no-op: detection finds the blocks already in
+    place and this does nothing, per explicit user request ("следующие
+    запуски уже не должны ничего сдвигать")."""
+    scan_max_col0 = min(LEGACY_BLOCK_COL0 + 20, BLOCK_B_COL0 - 1)
+    current_col0 = _detect_legacy_block_col0(sheets_client, sheet_title, scan_max_col0)
+    if current_col0 is None or current_col0 >= LEGACY_BLOCK_COL0:
+        return
+    width = scan_max_col0 - current_col0 + 1
+    log_fn(
+        "WARNING",
+        f"'Parent - DATE' blocks found at column {_col_letter(current_col0)}, migrating to "
+        f"{_col_letter(LEGACY_BLOCK_COL0)} (one-time fix-up, future runs will be a no-op)",
+    )
+    sheets_client.cut_paste_range(sheet_id, 0, LEGACY_BLOCK_SCAN_ROWS, current_col0, width, 0, LEGACY_BLOCK_COL0)
+
+
 async def run_uat_bugs_report_workflow(
     jira_client,
     sheets_client,
@@ -665,6 +729,13 @@ async def run_uat_bugs_report_workflow(
             min_rows=max(LEGACY_PERIOD_ROW_BUDGET, LEGACY_BLOCK_SCAN_ROWS, TIMESERIES_ROW_START + TIMESERIES_ROW_BUDGET) + 50,
             min_cols=TIMESERIES_COL0 + TIMESERIES_COL_BUDGET + 10,
         )
+        # One-time, idempotent fix-up: moves the "Parent - DATE" blocks to
+        # LEGACY_BLOCK_COL0 if they're still sitting at an older column (e.g.
+        # this spreadsheet predates the 2026-10-26 O->Q move, or was rolled
+        # back via Sheets' own Version History). A no-op on every run after
+        # the first, since the blocks are then already in place.
+        _auto_migrate_legacy_blocks(sheets_client, sheet_title, sheet_id, _log)
+
         # All four tables below share this one header row - unmerge it ONCE,
         # up front, before any of their writes; calling unmerge_row_band
         # again per-block would wipe out the merge a previous block in this
@@ -749,10 +820,10 @@ async def run_uat_bugs_report_workflow(
         # Legacy table: "period x status" (column A) - grows by one row per
         # run, same as it did historically (manually) before automation;
         # status columns also grow if a never-before-seen status appears.
-        # Must stop strictly before LEGACY_BLOCK_COL0 (column O) - the very
+        # Must stop strictly before LEGACY_BLOCK_COL0 (column Q) - the very
         # first "Parent - DATE" block has its title+header combined on row 1
         # (a quirk of the original manual layout), so a scan range reaching
-        # into column O would contaminate the period table's own header/rows
+        # into column Q would contaminate the period table's own header/rows
         # with that block's unrelated columns (this happened once - see
         # project memory).
         legacy_scan_last_col = _col_letter(LEGACY_BLOCK_COL0 - 1)
@@ -760,6 +831,20 @@ async def run_uat_bugs_report_workflow(
         legacy_header = legacy_existing[0] if legacy_existing else []
         legacy_rows = legacy_existing[1:] if len(legacy_existing) > 1 else []
         new_header, new_rows_data = _merge_legacy_period(legacy_header, legacy_rows, display_date, agg["status_totals"])
+
+        # Last-resort safety net: `_auto_migrate_legacy_blocks` (called above,
+        # before this section) should make this impossible, but if it's ever
+        # wrong, log loudly instead of silently overwriting "Parent - DATE"
+        # block cells again (what actually happened on 2026-10-26 - see
+        # LEGACY_BLOCK_COL0's comment).
+        if len(new_header) - 1 >= LEGACY_BLOCK_COL0:
+            _log(
+                "ERROR",
+                f"Period table's 'Total' column (index {len(new_header) - 1}) has reached "
+                f"LEGACY_BLOCK_COL0 ({LEGACY_BLOCK_COL0}) - it will overwrite 'Parent - DATE' "
+                "block cells on this write. The auto-migration should have moved the blocks "
+                "further right before this point - check _auto_migrate_legacy_blocks.",
+            )
 
         sheets_client.clear_values(sheet_title, f"A1:{legacy_scan_last_col}{LEGACY_PERIOD_ROW_BUDGET}")
         legacy_grid = _legacy_period_grid(new_header, new_rows_data, links)
@@ -785,7 +870,7 @@ async def run_uat_bugs_report_workflow(
             anchor_row=LEGACY_PERIOD_ROW_BUDGET + 2, anchor_col=0,
         )
 
-        # Legacy "Parent - DATE" blocks (column O) - a whole new block
+        # Legacy "Parent - DATE" blocks (column Q) - a whole new block
         # appended below the last existing one every run, matching how this
         # was built by hand before automation (one snapshot block per
         # update) - UNLESS the last existing block is already today's

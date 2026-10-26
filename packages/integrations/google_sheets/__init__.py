@@ -337,6 +337,34 @@ class GoogleSheetsClient(IntegrationClient):
             body={"requests": [{"mergeCells": {"range": target_range, "mergeType": "MERGE_ALL"}}]},
         ).execute()
 
+    def cut_paste_range(
+        self, sheet_id: int, row0: int, num_rows: int, col0: int, num_cols: int, dest_row0: int, dest_col0: int
+    ) -> None:
+        """Move a rectangular range - values, formatting, hyperlinks, notes -
+        to a new location via the Sheets API's own `cutPaste`, NOT a
+        read-then-rewrite (which would lose cell-level hyperlinks - see
+        `_cell_data`'s own note on how those are stored, and `write_values`/
+        `write_cells_with_links` which don't round-trip them). The source
+        range is cleared automatically as part of the "cut" - don't call
+        `clear_values` on it separately."""
+        service = self._get_service()
+        service.spreadsheets().batchUpdate(
+            spreadsheetId=self.spreadsheet_id,
+            body={"requests": [{
+                "cutPaste": {
+                    "source": {
+                        "sheetId": sheet_id,
+                        "startRowIndex": row0,
+                        "endRowIndex": row0 + num_rows,
+                        "startColumnIndex": col0,
+                        "endColumnIndex": col0 + num_cols,
+                    },
+                    "destination": {"sheetId": sheet_id, "rowIndex": dest_row0, "columnIndex": dest_col0},
+                    "pasteType": "PASTE_NORMAL",
+                }
+            }]},
+        ).execute()
+
     @staticmethod
     def row_series_chart_spec(
         chart_type: str,
