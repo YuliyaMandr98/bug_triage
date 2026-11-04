@@ -203,6 +203,14 @@ async def dashboard(request: Request, db: Session = Depends(get_db)) -> str:
                         <span class="label">Testing Tasks Generator</span>
                         <span class="hint">Create the missing API/Mobile/Web QA testing tasks (test cases, manual, automation) for a User Story, mirroring its summary.</span>
                     </a>
+                    <a class="action-btn" href="/ui/workflows/cancelled_bug_severity_cleanup/run">
+                        <span class="label">Cancelled Bug Severity Cleanup</span>
+                        <span class="hint">Clear the Severity field on cancelled bugs - no longer needed once a bug is closed with no work done.</span>
+                    </a>
+                    <a class="action-btn" href="/ui/workflows/failed_blocked_test_cases_report/run">
+                        <span class="label">Failed/Blocked Test Cases Report</span>
+                        <span class="hint">List every Failed/Blocked test case in the Mobile and Web UI test suites, with its folder/subfolder location.</span>
+                    </a>
                 </div>
             </div>
 

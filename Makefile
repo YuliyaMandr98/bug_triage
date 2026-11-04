@@ -1,4 +1,4 @@
-.PHONY: help setup dev stop clean triage-bugs review-pr review-comment-fixes upload-test-cases prioritize-test-cases audit-skipped-tests review-test-cases audit-bug-backlog uat-bug-test-cases uat-bug-sheet-report bugs-per-epics-report ac-checklist-sync test-case-status-sync testing-tasks-generator
+.PHONY: help setup dev stop clean triage-bugs review-pr review-comment-fixes upload-test-cases prioritize-test-cases audit-skipped-tests review-test-cases audit-bug-backlog uat-bug-test-cases uat-bug-sheet-report bugs-per-epics-report ac-checklist-sync test-case-status-sync testing-tasks-generator cancelled-bug-severity-cleanup failed-blocked-test-cases-report
 
 help:
 	@echo "Triage Bugs Tool - Developer Makefile"
@@ -24,6 +24,8 @@ help:
 	@echo "  make ac-checklist-sync ARGS=\"MB-1666 --write\"  # add --write to actually update Jira (default: preview only)"
 	@echo "  make test-case-status-sync ARGS=\"--apply\"  # sync macOS Apidog Failed test points with qa-api-tests .skip state (default: preview only)"
 	@echo "  make testing-tasks-generator ARGS=\"MB-3454 --apply\"  # create missing API/Mobile/Web QA testing tasks for a User Story (default: preview only)"
+	@echo "  make cancelled-bug-severity-cleanup ARGS=\"--apply\"  # clear Severity on cancelled bugs (default: preview only)"
+	@echo "  make failed-blocked-test-cases-report  # list Failed/Blocked test cases in the Mobile/Web UI test suites (read-only)"
 	@echo "  (add --help to ARGS on any of the above for the full list of options)"
 
 VENV := venv
@@ -107,6 +109,12 @@ test-case-status-sync:
 
 testing-tasks-generator:
 	PYTHONPATH=$(PWD) $(PYTHON) scripts/testing_tasks_generator.py $(ARGS)
+
+cancelled-bug-severity-cleanup:
+	PYTHONPATH=$(PWD) $(PYTHON) scripts/cancelled_bug_severity_cleanup.py $(ARGS)
+
+failed-blocked-test-cases-report:
+	PYTHONPATH=$(PWD) $(PYTHON) scripts/failed_blocked_test_cases_report.py $(ARGS)
 
 clean:
 	find . -type d -name __pycache__ -exec rm -rf {} + 2>/dev/null; true
